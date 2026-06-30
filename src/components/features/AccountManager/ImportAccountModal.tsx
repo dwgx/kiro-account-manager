@@ -754,7 +754,7 @@ return (
                                   {getProviderDisplayName(account.provider)} ({account.authMethod})
                                 </div>
                                 <div className={`text-xs text-muted-foreground`}>
-                                  {getAccountDisplayName(account)}
+                                  {account.email || account.userId || '账号信息将在导入时获取'}
                                 </div>
                               </div>
                               <div className={`px-2 py-1 rounded text-xs info-badge`}>

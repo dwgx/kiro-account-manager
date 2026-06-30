@@ -52,6 +52,54 @@ fn determine_provider(cli_account: &crate::kiro::cli::KiroCliAccount) -> String 
     }
 }
 
+/// 把 kiro-cli 的 expires_at 归一化成应用内部统一格式 `%Y/%m/%d %H:%M:%S`（本地时区）。
+///
+/// kiro-cli 存的是 ISO8601（如 `2026-06-30T07:27:43.65Z`），但应用其它地方（含后台自动
+/// 刷新循环 is_token_expired_within_seconds）只认 `%Y/%m/%d %H:%M:%S`，解析失败会当作已过期。
+/// 不归一化的话，未过期 token 导入后会被多刷一次。已是应用格式则原样返回。
+fn normalize_cli_expires_at(raw: Option<&str>) -> Option<String> {
+    let raw = raw?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if chrono::NaiveDateTime::parse_from_str(raw, "%Y/%m/%d %H:%M:%S").is_ok() {
+        return Some(raw.to_string());
+    }
+    chrono::DateTime::parse_from_rfc3339(raw).ok().map(|dt| {
+        dt.with_timezone(&chrono::Local)
+            .format("%Y/%m/%d %H:%M:%S")
+            .to_string()
+    })
+}
+
+/// 用 refresh_token 刷新 kiro-cli 账号的 access_token。
+///
+/// kiro-cli 缓存的 access_token 经常已过期，导入时必须能现刷。复用应用统一的
+/// refresh_token_by_provider：先用 cli_account 的字段拼出一个临时 Account，
+/// 让 IdC（用 client_id/client_secret/start_url）和 social（用 profile_arn）走各自分支。
+async fn refresh_cli_account_token(
+    cli_account: &crate::kiro::cli::KiroCliAccount,
+    provider: &str,
+    idc_start_url: Option<&str>,
+) -> Result<crate::commands::common::RefreshResult, String> {
+    let mut temp = Account::new(String::new(), String::new());
+    temp.provider = Some(provider.to_string());
+    temp.refresh_token = Some(cli_account.refresh_token.clone());
+    temp.region = Some(cli_account.region.clone());
+
+    if cli_account.auth_method == "social" {
+        temp.auth_method = Some("social".to_string());
+        temp.profile_arn.clone_from(&cli_account.profile_arn);
+    } else {
+        temp.auth_method = Some("IdC".to_string());
+        temp.client_id.clone_from(&cli_account.client_id);
+        temp.client_secret.clone_from(&cli_account.client_secret);
+        temp.start_url = idc_start_url.map(str::to_string);
+    }
+
+    crate::commands::common::refresh_token_by_provider(&temp).await
+}
+
 /// 检查账号是否已存在
 fn find_existing_account(
     accounts: &[Account],
@@ -178,6 +226,25 @@ pub async fn import_from_kiro_cli(
 
     // 2. 调用统一的 getUsageLimits API 获取配额
     let provider = determine_provider(cli_account);
+
+    // IdC 账号提前算好 start_url（Enterprise 刷新 token 时必须带上自己的 d-xxx 域名）。
+    // 优先用 token 自带的，缺失则回退到 clientSecret JWT，统一 normalize 去尾斜杠。
+    let idc_start_url = if cli_account.auth_method == "social" {
+        None
+    } else {
+        cli_account
+            .start_url
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| {
+                cli_account
+                    .client_secret
+                    .as_deref()
+                    .and_then(extract_start_url_from_client_secret)
+            })
+            .map(|s| normalize_start_url(&s))
+    };
+
     let account_machine_id = {
         let store = lock_account_store(&state.store)?;
         store
@@ -192,12 +259,50 @@ pub async fn import_from_kiro_cli(
             })
             .unwrap_or_else(generate_account_machine_id)
     };
+
+    // kiro-cli 数据库里缓存的 access_token 往往已经过期（这是导入失败的根因：过期 token
+    // 拿不到 usage → email/userId 全空 → 报“无法获取账号标识”）。这里与 add_account_by_idc
+    // 同源：先用缓存 token 试一次，遇到认证失败就用 refresh_token 刷新后重试，并把刷新得到的
+    // 新 token 落库，保证导入的账号立刻可用。
+    let mut final_access_token = cli_account.access_token.clone();
+    let mut final_refresh_token = cli_account.refresh_token.clone();
+    // CLI 存的是 ISO8601，归一化成应用统一格式，避免未过期 token 导入后被后台多刷一次
+    let mut final_expires_at = normalize_cli_expires_at(cli_account.expires_at.as_deref());
+
     let usage_result = get_usage_by_provider_with_machine_id(
         &provider,
-        &cli_account.access_token,
+        &final_access_token,
         &account_machine_id,
     )
     .await;
+
+    // 命中认证失败（token 过期/失效）时，用 refresh_token 刷新后重试一次
+    let needs_refresh = matches!(&usage_result, Ok(r) if r.is_auth_error) || usage_result.is_err();
+    let usage_result = if needs_refresh {
+        eprintln!("[Kiro CLI Import] 缓存 token 失效，尝试用 refresh_token 刷新后重试");
+        match refresh_cli_account_token(cli_account, &provider, idc_start_url.as_deref()).await {
+            Ok(refresh) => {
+                final_access_token = refresh.access_token.clone();
+                if let Some(rt) = refresh.refresh_token.clone() {
+                    final_refresh_token = rt;
+                }
+                final_expires_at = Some(crate::commands::common::calc_expires_at(refresh.expires_in));
+                get_usage_by_provider_with_machine_id(
+                    &provider,
+                    &final_access_token,
+                    &account_machine_id,
+                )
+                .await
+            }
+            Err(e) => {
+                eprintln!("[Kiro CLI Import] 刷新 token 失败: {e}");
+                // 刷新失败时沿用第一次的结果（让下面的错误处理给出一致提示）
+                usage_result
+            }
+        }
+    } else {
+        usage_result
+    };
 
     let (email, user_id, usage_data, is_banned, is_auth_error) = match usage_result {
         Ok(result) => {
@@ -239,14 +344,14 @@ pub async fn import_from_kiro_cli(
             success: false,
             is_new: false,
             account: None,
-            error: Some("无法获取账号标识（email 或 userId）".to_string()),
+            error: Some("无法获取账号标识（email 或 userId），token 可能已失效，请在 kiro-cli 重新登录后再导入".to_string()),
         });
     };
 
-    // 5. 填充字段
-    account.access_token = Some(cli_account.access_token.clone());
-    account.refresh_token = Some(cli_account.refresh_token.clone());
-    account.expires_at.clone_from(&cli_account.expires_at);
+    // 5. 填充字段（使用刷新后的最新 token）
+    account.access_token = Some(final_access_token.clone());
+    account.refresh_token = Some(final_refresh_token.clone());
+    account.expires_at = final_expires_at.clone();
     account.provider = Some(provider.clone());
     account.user_id = user_id;
     account.region = Some(cli_account.region.clone());
@@ -264,21 +369,9 @@ pub async fn import_from_kiro_cli(
         account.client_id.clone_from(&cli_account.client_id);
         account.client_secret.clone_from(&cli_account.client_secret);
 
-        // start_url：优先用 token 自带的，缺失则回退到 clientSecret JWT（与添加路径同源）。
-        // 切回 IDE 时要靠它算出正确的 clientIdHash —— Enterprise 必须是自己的 d-xxx 域名。
-        // 统一 normalize_start_url 去尾斜杠（JWT 那条已在真相源规范化，token 那条这里兜底），
-        // 保证落进 account.start_url 的永远是无斜杠规范形。
-        let start_url = cli_account
-            .start_url
-            .clone()
-            .filter(|s| !s.trim().is_empty())
-            .or_else(|| {
-                cli_account
-                    .client_secret
-                    .as_deref()
-                    .and_then(extract_start_url_from_client_secret)
-            })
-            .map(|s| normalize_start_url(&s));
+        // start_url 已在前面算好（切回 IDE 时要靠它算出正确的 clientIdHash —— Enterprise
+        // 必须是自己的 d-xxx 域名）。
+        let start_url = idc_start_url.clone();
 
         // clientIdHash：走统一裁决点，Enterprise 在此硬校验（issue #119）。导入数据被污染
         // （Enterprise 缺 start_url / 落到 BuilderId 默认值）时直接返回结构化失败，不写坏数据。
@@ -627,8 +720,85 @@ fn build_switch_payload(
 
 #[cfg(test)]
 mod tests {
-    use super::lock_account_store;
+    use super::{determine_provider, lock_account_store};
+    use crate::kiro::cli::KiroCliAccount;
     use std::sync::Mutex;
+
+    fn cli_account(auth_method: &str, start_url: Option<&str>, profile_arn: Option<&str>) -> KiroCliAccount {
+        KiroCliAccount {
+            access_token: "at".to_string(),
+            refresh_token: "aor-rt".to_string(),
+            profile_arn: profile_arn.map(str::to_string),
+            region: "us-east-1".to_string(),
+            expires_at: None,
+            scopes: None,
+            auth_method: auth_method.to_string(),
+            token_key: "kirocli:odic:token".to_string(),
+            client_id: None,
+            client_secret: None,
+            start_url: start_url.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn determine_provider_enterprise_from_custom_start_url() {
+        // 真实 kiro-cli Enterprise token 带自己的 d-xxx 域名
+        let acc = cli_account("IdC", Some("https://d-9066757a94.awsapps.com/start"), None);
+        assert_eq!(determine_provider(&acc), "Enterprise");
+    }
+
+    #[test]
+    fn determine_provider_builder_id_from_default_start_url() {
+        // BuilderId 默认 start_url
+        let acc = cli_account("IdC", Some("https://view.awsapps.com/start"), None);
+        assert_eq!(determine_provider(&acc), "BuilderId");
+    }
+
+    #[test]
+    fn determine_provider_builder_id_when_start_url_missing() {
+        let acc = cli_account("IdC", None, None);
+        assert_eq!(determine_provider(&acc), "BuilderId");
+    }
+
+    #[test]
+    fn determine_provider_social_google_and_github() {
+        let google = cli_account("social", None, Some("arn:aws:codewhisperer:::profile/google-xxx"));
+        assert_eq!(determine_provider(&google), "Google");
+        let github = cli_account("social", None, Some("arn:aws:codewhisperer:::profile/github-xxx"));
+        assert_eq!(determine_provider(&github), "Github");
+    }
+
+    #[test]
+    fn determine_provider_social_unknown_without_arn() {
+        let acc = cli_account("social", None, None);
+        assert_eq!(determine_provider(&acc), "Unknown");
+    }
+
+    #[test]
+    fn normalize_cli_expires_at_converts_iso8601_to_app_format() {
+        // kiro-cli 真实格式：ISO8601 带亚秒和 Z
+        let out = super::normalize_cli_expires_at(Some("2026-06-30T07:27:43.6500216Z"))
+            .expect("ISO8601 应能解析");
+        // 转换成本地时区后必须是应用统一格式，能被 NaiveDateTime 解析回来
+        assert!(
+            chrono::NaiveDateTime::parse_from_str(&out, "%Y/%m/%d %H:%M:%S").is_ok(),
+            "归一化输出必须是应用格式，实际: {out}"
+        );
+    }
+
+    #[test]
+    fn normalize_cli_expires_at_keeps_app_format_unchanged() {
+        let out = super::normalize_cli_expires_at(Some("2026/06/30 15:27:43"));
+        assert_eq!(out, Some("2026/06/30 15:27:43".to_string()));
+    }
+
+    #[test]
+    fn normalize_cli_expires_at_handles_none_and_empty() {
+        assert_eq!(super::normalize_cli_expires_at(None), None);
+        assert_eq!(super::normalize_cli_expires_at(Some("   ")), None);
+        // 完全无法解析的脏数据返回 None，由后台逻辑按“已过期”兜底刷新
+        assert_eq!(super::normalize_cli_expires_at(Some("garbage")), None);
+    }
 
     #[test]
     fn lock_account_store_returns_error_when_mutex_is_poisoned() {

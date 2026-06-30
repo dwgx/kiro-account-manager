@@ -363,11 +363,14 @@ function Settings() {
         setMachineGuidAction('reset')
         try {
             const newGuid = await invoke<string>('reset_system_machine_guid')
+            // 先复位按钮状态再弹提示：showSuccess 会阻塞等待用户关闭弹窗，
+            // 放在它之后的话，弹窗没关时按钮会一直转圈
+            setMachineGuidAction(null)
             setSystemMachineInfo((prev: any) => ({ ...prev, machineGuid: newGuid }))
             await showSuccess(t('settings.resetSuccess'), `${t('settings.newMachineGuid')}: ${newGuid}`)
         } catch (err: any) {
-            await showError(t('settings.resetFailed'), err.toString())
             setMachineGuidAction(null)
+            await showError(t('settings.resetFailed'), err.toString())
         }
     }
 
