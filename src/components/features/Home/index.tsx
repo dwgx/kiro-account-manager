@@ -317,9 +317,18 @@ function CliAccountDetail({ snapshot, cliPath }: { snapshot: any; cliPath: strin
   }
 
   // 判断认证类型
+  // IdC 需按 start_url 细分 BuilderId / Enterprise：BuilderId 的 start_url 固定是
+  // view.awsapps.com/start，其余（如企业 SSO 实例 ssoins-xxx / d-xxx）都是 Enterprise。
+  // 旧逻辑把所有 OIDC token 一律标成 "IdC (BuilderId)"，导致企业账号被误显示为 BuilderId。
   const isOidc = mainEntry.key?.includes('odic')
   const isSocial = mainEntry.key?.includes('social')
-  const authMethod = isSocial ? 'Social' : isOidc ? 'IdC (BuilderId)' : 'Unknown'
+  const startUrl: string = (tokenData.start_url || '').trim().replace(/\/+$/, '')
+  const isBuilderId = !startUrl || startUrl === 'https://view.awsapps.com/start'
+  const authMethod = isSocial
+    ? 'Social'
+    : isOidc
+      ? `IdC (${isBuilderId ? 'BuilderId' : 'Enterprise'})`
+      : 'Unknown'
 
   // Token 过期判断
   let expiresStr = '-'

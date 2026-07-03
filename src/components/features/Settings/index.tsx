@@ -367,6 +367,8 @@ function Settings() {
             await showSuccess(t('settings.resetSuccess'), `${t('settings.newMachineGuid')}: ${newGuid}`)
         } catch (err: any) {
             await showError(t('settings.resetFailed'), err.toString())
+        } finally {
+            // 成功/失败都要清除，否则按钮卡在 loading 动画且因 disabled 永久无法再点
             setMachineGuidAction(null)
         }
     }
