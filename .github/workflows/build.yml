@@ -23,6 +23,9 @@ jobs:
   build:
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      # 自动更新签名私钥（无密码，个人二改内置，详见 release.yml 说明）
+      TAURI_SIGNING_PRIVATE_KEY: dW50cnVzdGVkIGNvbW1lbnQ6IHJzaWduIGVuY3J5cHRlZCBzZWNyZXQga2V5ClJXUlRZMEl5SUY0dGNCUVRSeGFmQzNLTzRxbFE0KzFMcmJoK3VhR0VYcUcyMUQxak1RRUFBQkFBQUFBQUFBQUFBQUlBQUFBQXBib0pHN3NmWjdZVjFoS2xjUFJQWkJNT2E1Vmp1YkVkeFZCdDc0SFBOL2J2Q1VkYlF0UEZZZVFVUXEwVzBLSnBvWkk5LzFkVzFsdEZzWkY2VHJsNUdQd3VvTVRSemJrTkhmY1VjK1llUnV3NGUwWENSM0pyMkRzUVp2bnlCQS9lTFRzdGlhbG1Na3M9Cg==
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
     strategy:
       fail-fast: false
       matrix:
@@ -166,8 +169,7 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # TAURI_SIGNING_PRIVATE_KEY / _PASSWORD 由 job 级 env 提供
           APPIMAGETOOL_COMP: ${{ startsWith(matrix.platform, 'ubuntu') && 'gzip' || '' }}
         with:
           args: ${{ matrix.target && format('--target {0}', matrix.target) || '' }}

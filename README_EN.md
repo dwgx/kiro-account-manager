@@ -307,34 +307,6 @@ Prerequisites: Node.js 20+, Rust toolchain, system WebView dependencies.
 
 ---
 
-## 🤝 Sponsors
-
-<table>
-  <tr>
-    <td align="center" width="50%">
-      <a href="https://fishxcode.com/" target="_blank"><b>🐟 FishXCode</b></a><br>
-      <sub>Stable Claude API relay service</sub>
-    </td>
-    <td align="center" width="50%">
-      <a href="https://synai996.space/" target="_blank"><b>🤖 SynAI996</b></a><br>
-      <sub>High-performance AI model API proxy platform</sub>
-    </td>
-  </tr>
-</table>
-
-## 💖 Sponsorship
-
-If this project helps you, you can buy the author a coffee ☕ (please note your GitHub username for easy addition to the sponsor list)
-
-<p align="center">
-  <img src="src/assets/donate/wechat.jpg" alt="WeChat" width="200">
-  <img src="src/assets/donate/alipay.jpg" alt="Alipay" width="200">
-</p>
-
-Thanks to sponsors: 🌟 [shiro123444](https://github.com/shiro123444)
-
----
-
 ## ⭐ Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=hj01857655/kiro-account-manager&type=Date)](https://star-history.com/#hj01857655/kiro-account-manager&Date)

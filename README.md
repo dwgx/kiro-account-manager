@@ -370,34 +370,6 @@ bun run tauri build  # 构建发行版
 
 ---
 
-## 🤝 赞助商
-
-<table>
-  <tr>
-    <td align="center" width="50%">
-      <a href="https://fishxcode.com/" target="_blank"><b>🐟 FishXCode</b></a><br>
-      <sub>稳定的 Claude API 中转服务</sub>
-    </td>
-    <td align="center" width="50%">
-      <a href="https://synai996.space/" target="_blank"><b>🤖 SynAI996</b></a><br>
-      <sub>高性能 AI 模型 API 代理平台</sub>
-    </td>
-  </tr>
-</table>
-
-## 💖 赞助
-
-如果这个项目对你有帮助，可以请作者喝杯咖啡 ☕（请备注 GitHub 用户名，方便添加到赞赏名单）
-
-<p align="center">
-  <img src="src/assets/donate/wechat.jpg" alt="微信" width="200">
-  <img src="src/assets/donate/alipay.jpg" alt="支付宝" width="200">
-</p>
-
-感谢赞赏：🌟 [shiro123444](https://github.com/shiro123444)
-
----
-
 ## ⭐ Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=hj01857655/kiro-account-manager&type=Date)](https://star-history.com/#hj01857655/kiro-account-manager&Date)

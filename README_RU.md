@@ -296,34 +296,6 @@ bun run tauri build  # Сборка релиза
 
 ---
 
-## 🤝 Спонсоры
-
-<table>
-  <tr>
-    <td align="center" width="50%">
-      <a href="https://fishxcode.com/" target="_blank"><b>🐟 FishXCode</b></a><br>
-      <sub>Стабильная служба ретрансляции Claude API</sub>
-    </td>
-    <td align="center" width="50%">
-      <a href="https://synai996.space/" target="_blank"><b>🤖 SynAI996</b></a><br>
-      <sub>Высокопроизводительная платформа прокси API моделей ИИ</sub>
-    </td>
-  </tr>
-</table>
-
-## 💖 Спонсорство
-
-Если этот проект помог вам, вы можете угостить автора кофе ☕ (пожалуйста, укажите ваше имя пользователя GitHub для удобного добавления в список спонсоров)
-
-<p align="center">
-  <img src="src/assets/donate/wechat.jpg" alt="WeChat" width="200">
-  <img src="src/assets/donate/alipay.jpg" alt="Alipay" width="200">
-</p>
-
-Спасибо спонсорам: 🌟 [shiro123444](https://github.com/shiro123444)
-
----
-
 ## ⭐ История звёзд
 
 [![Star History Chart](https://api.star-history.com/svg?repos=hj01857655/kiro-account-manager&type=Date)](https://star-history.com/#hj01857655/kiro-account-manager&Date)

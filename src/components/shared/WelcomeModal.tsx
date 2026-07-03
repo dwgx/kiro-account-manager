@@ -1,9 +1,7 @@
 
 import { useState, useEffect } from 'react'
-import { Coffee, X, Users, ExternalLink, Github } from 'lucide-react'
+import { X, ExternalLink, Github } from 'lucide-react'
 import { useApp } from '../../hooks/useApp'
-import alipayQR from '../../assets/donate/alipay.jpg'
-import wechatQR from '../../assets/donate/wechat.jpg'
 
 const TelegramIcon = ({ size = 14 }: { size?: number }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
@@ -14,7 +12,6 @@ const TelegramIcon = ({ size = 14 }: { size?: number }) => (
 function WelcomeModal() {
   const { t } = useApp()
   const [open, setOpen] = useState(false)
-  const [previewImg, setPreviewImg] = useState(null)
 
   useEffect(() => {
     // 检查今天是否已显示过
@@ -73,9 +70,9 @@ function WelcomeModal() {
           </div>
         </div>
 
-        {/* 内容 - 左右分栏 */}
-        <div className="px-6 py-4 relative grid grid-cols-[1fr_1fr] gap-5">
-          {/* 左侧：免费声明 + 联系链接 */}
+        {/* 内容 */}
+        <div className="px-6 py-4 relative">
+          {/* 免费声明 + 联系链接 */}
           <div className="flex flex-col gap-3">
             <div className={`border-l-4 border-amber-500 bg-muted/30 rounded-r-xl p-4`}>
               <div className="flex items-start gap-3">
@@ -147,71 +144,6 @@ function WelcomeModal() {
               </div>
             </div>
           </div>
-
-          {/* 右侧：赞助信息 */}
-          <div className="flex flex-col gap-3">
-            <div className="bg-muted/30 rounded-xl p-4 flex flex-col">
-              <div className="flex items-center gap-2 mb-2">
-                <Coffee size={16} className="text-amber-500" />
-                <p className={`text-sm font-semibold text-foreground`}>
-                  {t('welcome.buyMeCoffee')}
-                </p>
-              </div>
-
-              <p className={`text-xs text-muted-foreground mb-3`}>
-                {t('welcome.supportMessage')}
-              </p>
-
-              {/* 二维码 */}
-              <div className="flex justify-center gap-3 mb-2">
-                <button
-                  onClick={() => setPreviewImg(alipayQR)}
-                  className="flex flex-col items-center gap-1.5 p-2 rounded-lg border border-border bg-card hover:bg-muted/40 cursor-pointer transition-colors focus:outline-none focus:ring-2 focus:ring-primary/30"
-                >
-                  <img
-                    src={alipayQR}
-                    alt="支付宝"
-                    className="w-20 h-20 rounded-md"
-                  />
-                  <span className={`text-xs font-medium text-foreground`}>{t('welcome.alipay')}</span>
-                </button>
-                <button
-                  onClick={() => setPreviewImg(wechatQR)}
-                  className="flex flex-col items-center gap-1.5 p-2 rounded-lg border border-border bg-card hover:bg-muted/40 cursor-pointer transition-colors focus:outline-none focus:ring-2 focus:ring-primary/30"
-                >
-                  <img
-                    src={wechatQR}
-                    alt="WeChat Pay"
-                    className="w-20 h-20 rounded-md"
-                  />
-                  <span className={`text-xs font-medium text-foreground`}>{t('welcome.wechatPay')}</span>
-                </button>
-              </div>
-              <p className={`text-[11px] text-muted-foreground text-center`}>{t('welcome.clickToEnlarge')}</p>
-            </div>
-
-            {/* 赞助用户群 */}
-            <a
-              href="https://qm.qq.com/q/xzWxJsSUD0"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="group flex items-start gap-3 px-3 py-2.5 rounded-lg border border-border bg-card hover:bg-muted/40 transition-colors"
-            >
-              <div className="w-8 h-8 rounded-md flex items-center justify-center text-purple-500 bg-purple-500/10">
-                <Users size={15} />
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="text-xs font-medium text-foreground mb-1">{t('welcome.sponsorBenefits')}</div>
-                <div className="text-[11px] text-muted-foreground leading-relaxed space-y-0.5">
-                  <p>{t('welcome.priorityFeedback')}</p>
-                  <p>{t('welcome.priorityFeatures')}</p>
-                  <p>{t('welcome.oneOnOneSupport')}</p>
-                </div>
-                <p className="text-[11px] text-muted-foreground mt-1.5 leading-relaxed">{t('welcome.sponsorHint')}</p>
-              </div>
-              <ExternalLink size={13} className="text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 mt-1" />
-            </a>
-          </div>
         </div>
 
         {/* 底部按钮 */}
@@ -224,28 +156,6 @@ function WelcomeModal() {
           </button>
         </div>
       </div>
-
-      {/* 图片预览弹窗 */}
-      {previewImg && (
-        <div
-          className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-[60] p-4"
-          onClick={() => setPreviewImg(null)}
-        >
-          <div className="relative" onClick={(e) => e.stopPropagation()}>
-            <img
-              src={previewImg}
-              alt={t('common.preview')}
-              className="max-w-[360px] max-h-[360px] rounded-2xl shadow-2xl"
-            />
-            <button
-              className={`absolute -top-3 -right-3 w-10 h-10 rounded-full flex items-center justify-center shadow-lg transition-colors duration-200 cursor-pointer focus:ring-2 focus:ring-blue-500/30 glass-card border border-border`}
-              onClick={() => setPreviewImg(null)}
-            >
-              <X size={18} className={"text-foreground"} />
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   )
 }

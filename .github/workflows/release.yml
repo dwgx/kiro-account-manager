@@ -11,6 +11,10 @@ jobs:
       contents: write
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      # 自动更新签名私钥（无密码）。本项目为个人二改，唯一分发渠道是本仓库 GitHub Release + HTTPS，
+      # 故私钥直接内置于此、无需 secret 维护。安全性依赖 GitHub 仓库与 HTTPS 而非私钥保密。
+      TAURI_SIGNING_PRIVATE_KEY: dW50cnVzdGVkIGNvbW1lbnQ6IHJzaWduIGVuY3J5cHRlZCBzZWNyZXQga2V5ClJXUlRZMEl5SUY0dGNCUVRSeGFmQzNLTzRxbFE0KzFMcmJoK3VhR0VYcUcyMUQxak1RRUFBQkFBQUFBQUFBQUFBQUlBQUFBQXBib0pHN3NmWjdZVjFoS2xjUFJQWkJNT2E1Vmp1YkVkeFZCdDc0SFBOL2J2Q1VkYlF0UEZZZVFVUXEwVzBLSnBvWkk5LzFkVzFsdEZzWkY2VHJsNUdQd3VvTVRSemJrTkhmY1VjK1llUnV3NGUwWENSM0pyMkRzUVp2bnlCQS9lTFRzdGlhbG1Na3M9Cg==
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
     strategy:
       fail-fast: false
       matrix:
@@ -101,54 +105,6 @@ jobs:
         shell: bash
         run: bun install
 
-      # 防呆校验：确保 CI 签名私钥与 tauri.conf.json 内置 pubkey 是同一对密钥。
-      # 历史教训：pubkey 被改过多次但 TAURI_SIGNING_PRIVATE_KEY secret 未同步，
-      # 导致 1.8.6-1.8.8 发布包用错误私钥签名，用户自动更新报
-      # "The signature was created with a different key than the one provided"。
-      # 不匹配时在昂贵的构建前直接失败，杜绝再次发出无法自动更新的版本。
-      - name: Verify updater signing key matches bundled pubkey
-        shell: bash
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: |
-          set -euo pipefail
-          PY=$(command -v python3 || command -v python)
-
-          # 1) tauri.conf.json 内置 pubkey 的 key id（minisign 公钥注释行直接含 hex）
-          PUBKEY_B64=$(jq -r '.plugins.updater.pubkey' src-tauri/tauri.conf.json)
-          PUB_KEYID=$(printf '%s' "$PUBKEY_B64" | base64 -d \
-            | grep -i 'minisign public key' \
-            | grep -oiE '[0-9A-Fa-f]{16}' | head -1 | tr '[:upper:]' '[:lower:]' || true)
-          if [ -z "$PUB_KEYID" ]; then
-            echo "::error::无法从 tauri.conf.json 解析 pubkey 的 key id"; exit 1
-          fi
-
-          # 2) 用 CI 私钥签临时文件，从签名内嵌 key id 反推私钥身份（顺带验证密码 secret）
-          echo "kam-signing-key-check" > _keycheck.txt
-          if ! bun run tauri signer sign _keycheck.txt > _sign.out 2>&1; then
-            echo "::error::更新签名失败——TAURI_SIGNING_PRIVATE_KEY / _PASSWORD secret 配置有误"
-            cat _sign.out; rm -f _keycheck.txt _keycheck.txt.sig _sign.out; exit 1
-          fi
-          if [ ! -f _keycheck.txt.sig ]; then
-            echo "::error::签名成功但未找到 _keycheck.txt.sig"; cat _sign.out; rm -f _keycheck.txt _sign.out; exit 1
-          fi
-          # .sig 文件是单行 base64，需解两层：第一层得到 minisign 文本，取第2行裸签名再解一层，
-          # 结构为 [2字节算法][8字节 little-endian key id][签名]，故 b[2:10] 反转即 key id。
-          PRIV_KEYID=$("$PY" -c "import base64;raw=open('_keycheck.txt.sig','rb').read();b=base64.b64decode(base64.b64decode(raw).splitlines()[1]);print(b[2:10][::-1].hex())" || true)
-          rm -f _keycheck.txt _keycheck.txt.sig _sign.out
-          if ! printf '%s' "$PRIV_KEYID" | grep -qiE '^[0-9a-f]{16}$'; then
-            echo "::error::无法从签名解析出合法的私钥 key id（得到 '$PRIV_KEYID'），校验逻辑可能需要修正"; exit 1
-          fi
-
-          echo "bundled pubkey  key id (tauri.conf.json): $PUB_KEYID"
-          echo "signing privkey key id (CI secret)      : $PRIV_KEYID"
-          if [ "$PUB_KEYID" != "$PRIV_KEYID" ]; then
-            echo "::error::签名私钥($PRIV_KEYID) 与 tauri.conf.json 内置 pubkey($PUB_KEYID) 不匹配！发布后旧版用户自动更新会报 'The signature was created with a different key'。请同步 TAURI_SIGNING_PRIVATE_KEY secret 与 tauri.conf.json 的 pubkey。"
-            exit 1
-          fi
-          echo "✓ 签名私钥与内置 pubkey 匹配 ($PUB_KEYID)，自动更新签名校验可通过"
-
       - name: Generate Release Notes
         id: release_notes
         shell: bash
@@ -195,8 +151,7 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # TAURI_SIGNING_PRIVATE_KEY / _PASSWORD 由 job 级 env 提供
           # Linux AppImage 使用 gzip 压缩，兼容旧版 AppImageLauncher
           APPIMAGETOOL_COMP: ${{ startsWith(matrix.platform, 'ubuntu') && 'gzip' || '' }}
         with:

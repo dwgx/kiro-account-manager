@@ -1,16 +1,13 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
-import { Github, Heart, Coffee, ExternalLink, Code2, Palette, Cpu, RefreshCw, X, Link2, Gift, Sparkles, Info, Users } from 'lucide-react'
+import { Github, Heart, ExternalLink, Code2, Palette, Cpu, RefreshCw, Link2, Sparkles } from 'lucide-react'
 import { getVersion } from '@tauri-apps/api/app'
 import { invoke } from '@tauri-apps/api/core'
 import { check } from '@tauri-apps/plugin-updater'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { DialogRoot, DialogContent } from '@/components/shared/dialog'
 import { useApp } from '../../../hooks/useApp'
 import { useDialog } from '../../../contexts/DialogContext'
-import alipayQR from '../../../assets/donate/alipay.jpg'
-import wechatQR from '../../../assets/donate/wechat.jpg'
 import { isLightTheme as checkIsLightTheme } from '../../../utils/themeMode'
 import { getThemeAccent } from '../KiroConfig/themeAccent'
 import SectionCard from '../Settings/SectionCard'
@@ -79,24 +76,11 @@ function LinkRow({ href, icon, label, desc, accent }: LinkRowProps) {
   )
 }
 
-// 二维码卡片
-const QRCodeCard = ({ src, label, onClick }: { src: string; label: string; onClick: () => void }) => (
-  <button
-    onClick={onClick}
-    className="group flex flex-col items-center gap-1.5 p-2 rounded-lg border border-border bg-card hover:bg-muted/40 hover:shadow-sm transition-all focus:outline-none focus:ring-2 focus:ring-primary/30"
-    aria-label={label}
-  >
-    <img src={src} alt={label} className="w-[120px] h-[120px] rounded-md transition-transform duration-200 group-hover:scale-[1.02]" />
-    <span className="text-xs font-medium text-foreground">{label}</span>
-  </button>
-)
-
 function About() {
   const { t, theme } = useApp()
   const { showUpdate, showInfo } = useDialog()
   const [version, setVersion] = useState('')
   const [checking, setChecking] = useState(false)
-  const [previewImg, setPreviewImg] = useState<string | null>(null)
 
   const accent = useMemo(() => getThemeAccent(theme), [theme])
 
@@ -110,12 +94,6 @@ function About() {
     { icon: Palette, value: 'TailwindCSS' },
     { icon: Cpu, value: 'Tauri + Rust' },
   ], [])
-
-  const sponsorBenefits = useMemo(() => [
-    t('about.benefit1'),
-    t('about.benefit2'),
-    t('about.benefit3'),
-  ], [t])
 
   useEffect(() => {
     getVersion().then(setVersion).catch(() => setVersion(''))
@@ -237,50 +215,7 @@ function About() {
           </div>
         </SectionCard>
 
-        {/* === 3. 赞赏卡 === */}
-        <SectionCard
-          title={t('about.donate')}
-          accent="amber"
-          icon={<Coffee size={14} className="text-amber-500" />}
-          desc={t('about.donateDesc')}
-        >
-
-
-
-          {/* 提示条 */}
-          <div className="flex items-start gap-2 px-3 py-2 rounded-lg border border-blue-500/20 bg-blue-500/5">
-            <Info size={13} className="text-blue-500 flex-shrink-0 mt-0.5" />
-            <p className="text-[11px] text-foreground leading-relaxed">{t('about.sponsorNote')}</p>
-          </div>
-
-          {/* 二维码两栏 */}
-          <div className="grid grid-cols-2 gap-2 pt-1">
-            <QRCodeCard src={alipayQR} label={t('about.alipay')} onClick={() => setPreviewImg(alipayQR)} />
-            <QRCodeCard src={wechatQR} label={t('about.wechat')} onClick={() => setPreviewImg(wechatQR)} />
-          </div>
-          <p className="text-[11px] text-center text-muted-foreground">{t('about.clickToEnlarge')}</p>
-
-          {/* 赞助用户群 */}
-          <div className="rounded-lg border border-purple-500/20 bg-purple-500/5 p-3">
-            <div className="flex items-center gap-2 mb-2">
-              <Users size={13} className="text-purple-500" />
-              <span className="text-xs font-medium text-foreground">{t('about.sponsorGroup')}</span>
-            </div>
-            <p className="text-[11px] text-muted-foreground mb-2">{t('about.sponsorGroupDesc')}</p>
-            <a
-              href={LINKS.qqGroup}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-md bg-purple-500 hover:bg-purple-600 text-white text-xs font-medium transition-colors"
-            >
-              <Users size={12} />
-              {t('about.qqGroup')}: 644918166
-              <ExternalLink size={11} />
-            </a>
-          </div>
-        </SectionCard>
-
-        {/* === 4. 底部署名 === */}
+        {/* === 3. 底部署名 === */}
         <div className="flex items-center justify-center gap-1.5 py-3 text-xs text-muted-foreground">
           <Sparkles size={12} className="text-primary/70" />
           <span>{t('about.madeWith')}</span>
@@ -290,22 +225,6 @@ function About() {
           <span>© {CURRENT_YEAR}</span>
         </div>
       </div>
-
-      {/* 二维码预览弹窗 */}
-      <DialogRoot open={!!previewImg} onOpenChange={(open) => !open && setPreviewImg(null)}>
-        <DialogContent maxWidth="fit-content" showClose={false} className="bg-transparent border-none shadow-none">
-          <div className="relative">
-            {previewImg && <img src={previewImg} alt={t('common.preview')} className="max-w-[320px] max-h-[320px] rounded-xl shadow-xl" />}
-            <button
-              className="absolute -top-3 -right-3 w-8 h-8 rounded-full glass-card flex items-center justify-center shadow-lg transition-colors cursor-pointer focus:outline-none focus:ring-2 focus:ring-primary/30"
-              onClick={() => setPreviewImg(null)}
-              aria-label={t('about.closePreview')}
-            >
-              <X size={16} className="text-foreground" />
-            </button>
-          </div>
-        </DialogContent>
-      </DialogRoot>
     </div>
   )
 }
