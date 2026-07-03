@@ -271,7 +271,7 @@ impl AuthProvider for IdcProvider {
         println!("[IdC] Region: {region}, Start URL: {start_url}");
 
         // Step 1: 创建 AWS SSO 客户端
-        let sso_client = AWSSSOClient::new(region);
+        let sso_client = AWSSSOClient::new(region)?;
 
         // Step 2: 启动本地 HTTP 服务器接收回调
         let (tx, rx) = oneshot::channel::<Result<(String, String), String>>();
@@ -395,7 +395,7 @@ impl AuthProvider for IdcProvider {
         let sso_client = if let Some(account) = metadata.account.as_ref() {
             AWSSSOClient::for_account(region, account)?
         } else {
-            AWSSSOClient::new(region)
+            AWSSSOClient::new(region)?
         };
         let token_response = sso_client
             .refresh_token(&client_id, &client_secret, refresh_token)

@@ -32,6 +32,22 @@ impl CliSessionStorage {
         }
     }
 
+    /// 校验 session_id 是合法的路径组件，防止路径遍历攻击。
+    ///
+    /// `session_id` 来自前端命令，直接被拼进文件路径（`{session_id}.json` 等）。
+    /// 不校验时，形如 `..\..\something` 的输入可读取/删除 base_path 之外的任意
+    /// `.json/.jsonl/.lock/.history` 文件。规则与 IDE 侧 session_storage.rs 保持一致：
+    /// 只允许字母、数字、下划线、连字符、点号，且不含 `..` 与路径分隔符。
+    fn is_safe_session_id(session_id: &str) -> bool {
+        !session_id.is_empty()
+            && !session_id.contains("..")
+            && !session_id.contains('/')
+            && !session_id.contains('\\')
+            && session_id
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.')
+    }
+
     /// 列出所有 CLI sessions
     pub fn list_sessions(&self) -> Result<Vec<CliSessionSummary>> {
         let mut sessions = Vec::new();
@@ -141,6 +157,10 @@ impl CliSessionStorage {
 
     /// 加载完整 session（包含消息）
     pub fn load_session(&self, session_id: &str) -> Result<CliSession> {
+        if !Self::is_safe_session_id(session_id) {
+            log::warn!("[安全] 检测到非法的 CLI session_id: {session_id}");
+            anyhow::bail!("Invalid session_id");
+        }
         let json_path = self.base_path.join(format!("{session_id}.json"));
         if !json_path.exists() {
             anyhow::bail!("Session not found: {session_id}");
@@ -206,6 +226,10 @@ impl CliSessionStorage {
 
     /// 删除 session
     pub fn delete_session(&self, session_id: &str) -> Result<()> {
+        if !Self::is_safe_session_id(session_id) {
+            log::warn!("[安全] 检测到非法的 CLI session_id: {session_id}");
+            anyhow::bail!("Invalid session_id");
+        }
         let extensions = ["json", "jsonl", "lock", "history"];
         for ext in extensions {
             let path = self.base_path.join(format!("{session_id}.{ext}"));

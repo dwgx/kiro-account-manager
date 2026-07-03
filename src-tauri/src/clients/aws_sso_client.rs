@@ -61,11 +61,13 @@ pub struct TokenResponse {
 }
 
 impl AWSSSOClient {
-    pub fn new(region: &str) -> Self {
+    pub fn new(region: &str) -> Result<Self, String> {
         let base_url = format!("https://oidc.{region}.amazonaws.com");
-        let client = build_http_client().expect("Failed to create HTTP client");
+        // 不要 expect：坏代理配置会让 build_http_client 失败，panic 会终结唯一的
+        // 后台 token 刷新任务，导致所有账号自动刷新永久停摆。改为向上传播错误。
+        let client = build_http_client().map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
 
-        Self { base_url, client }
+        Ok(Self { base_url, client })
     }
 
     pub fn for_account(region: &str, account: &Account) -> Result<Self, String> {

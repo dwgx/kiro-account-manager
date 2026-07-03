@@ -612,6 +612,35 @@ pub fn calc_expires_at(expires_in: i64) -> String {
     expires_at.format("%Y/%m/%d %H:%M:%S").to_string()
 }
 
+/// 把外部来源的 expires_at 规范化成内部统一格式 `%Y/%m/%d %H:%M:%S`（本地时区）。
+///
+/// 内部所有过期判断（`is_token_expired_within_seconds`）只认这个格式，解析失败一律
+/// 当作"已过期"。但 kiro-cli 数据库里的 token `expires_at` 是 RFC3339（带 'Z'，UTC），
+/// 直接原样存进 `account.expires_at` 会让导入账号永远被判为已过期、每次访问都强制刷新。
+///
+/// 这里统一入口：
+/// - 先按内部格式解析（已规范化的值原样返回，幂等）；
+/// - 再按 RFC3339 解析，转成本地时区后重新格式化；
+/// - 两者都失败返回 None（交由调用方决定回退策略，不再把脏格式写进 store）。
+pub fn normalize_expires_at(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    // 已经是内部格式：原样返回，保证幂等（避免重复导入时二次转换）
+    if chrono::NaiveDateTime::parse_from_str(trimmed, "%Y/%m/%d %H:%M:%S").is_ok() {
+        return Some(trimmed.to_string());
+    }
+    // RFC3339（kiro-cli / IDE token 的真实格式，带时区）→ 转本地时区后重新格式化
+    chrono::DateTime::parse_from_rfc3339(trimmed)
+        .ok()
+        .map(|dt| {
+            dt.with_timezone(&chrono::Local)
+                .format("%Y/%m/%d %H:%M:%S")
+                .to_string()
+        })
+}
+
 /// 根据 `usage_result` 计算账号状态
 pub fn calc_status(
     is_banned: bool,

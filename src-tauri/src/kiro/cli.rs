@@ -85,10 +85,21 @@ pub struct KiroCliSwitchPayload {
     pub device_reg_value: String,
 }
 
-/// 写入前的备份数据（用于回滚）
+/// 写入前的备份数据（用于回滚）。
+///
+/// 记录切号前**所有受影响 key 的完整快照**（3 个 token key + device_reg_key），而不仅是
+/// 目标两键。切号会写目标 token/device_reg 并 DELETE 其余兄弟 token key；只备份目标两键的
+/// 旧实现回滚时既不删新写入的键、也不恢复被删的兄弟键，跨类型切换（如 social→IdC）回滚后
+/// DB 停在错误状态、原 token 永久丢失。用全量快照可精确还原到切号前。
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct KiroCliWriteBackup {
+    /// 切号前所有受影响 key 的 (key, value) 快照。切号时存在的键才入表；
+    /// 回滚时先删光受影响 key 集合，再把本表原样写回，从而精确还原。
+    pub key_snapshot: Vec<(String, String)>,
+    // 保留旧字段以兼容历史序列化数据（前端目前不读，仅防旧 backup 反序列化失败）
+    #[serde(default)]
     pub old_token: Option<(String, String)>,
+    #[serde(default)]
     pub old_device_reg: Option<(String, String)>,
     pub backup_time: String,
 }
@@ -177,8 +188,17 @@ fn read_token_from_db(conn: &Connection, key: &str) -> SqliteResult<KiroCliAccou
             .collect()
     });
 
-    // 判断认证类型
-    let auth_method = if profile_arn.is_some() {
+    // 判断认证类型：**以 token_key 为权威**。key 本身就编码了类型
+    // （`...:social:token` vs `...:odic:token`），比靠 payload 里 profile_arn/scopes
+    // 是否存在更可靠——真实 token 可能缺 scopes 或 profile_arn 字段，靠字段推断会落到
+    // "unknown"，导致 IdC 账号不加载 device-registration（client_id/secret 丢失、无法
+    // 刷新）、social 账号 provider 判成 Unknown（无法切号）。payload 字段仅作 key 缺类型
+    // 标识时的兜底。
+    let auth_method = if key.contains(":social:") {
+        "social".to_string()
+    } else if key.contains(":odic:") {
+        "IdC".to_string()
+    } else if profile_arn.is_some() {
         "social".to_string()
     } else if scopes.is_some() {
         "IdC".to_string()
@@ -275,6 +295,35 @@ fn normalize_token_for_cli(token: &mut TokenData, auth_method: &str) {
     }
 }
 
+/// 切号会写入/清除的全部 token key（与 Electron 版本一致）。切号时目标 key 写新值，
+/// 其余一律 DELETE。备份与回滚都以此集合为准，保证回滚能精确还原。
+const ALL_CLI_TOKEN_KEYS: [&str; 3] = [
+    "kirocli:social:token",
+    "kirocli:odic:token",
+    "codewhisperer:odic:token",
+];
+
+/// 切号可能写入的全部 device-registration key。切号只写目标一个，但回滚要能处理
+/// 「切号前该 key 不存在、切号新建了它」的情况——只删 token 不删 device_reg 会残留
+/// 新写的 device_reg。与 token 对称：快照全部、回滚删全部再从快照还原，切号没碰过的
+/// 兄弟 device_reg 因在快照里会被原样还原，切号新建的（不在快照）则被清除。
+const ALL_CLI_DEVICE_REG_KEYS: [&str; 3] = [
+    "kirocli:social:device-registration",
+    "kirocli:odic:device-registration",
+    "codewhisperer:odic:device-registration",
+];
+
+/// 收集切号前所有受影响 key 的完整快照（存在的键才入表）。
+fn snapshot_affected_keys(conn: &Connection) -> Vec<(String, String)> {
+    let mut snapshot = Vec::new();
+    for key in ALL_CLI_TOKEN_KEYS.iter().chain(ALL_CLI_DEVICE_REG_KEYS.iter()) {
+        if let Ok(value) = read_kv_value(conn, key) {
+            snapshot.push(((*key).to_string(), value));
+        }
+    }
+    snapshot
+}
+
 /// 切号写入 CLI 2.0 数据库
 pub fn switch_cli_account(
     db_path: &str,
@@ -291,9 +340,9 @@ pub fn switch_cli_account(
         .transaction()
         .map_err(|e| format!("无法开启事务: {e}"))?;
 
-    // 备份旧值
-    let old_token = read_kv_value(&tx, &payload.token_key).ok();
-    let old_device_reg = read_kv_value(&tx, &payload.device_reg_key).ok();
+    // 备份切号前所有受影响 key 的完整快照（token 三兄弟 + device_reg），
+    // 而非仅目标两键——否则跨类型切换回滚会丢被 DELETE 的兄弟 token（H1）。
+    let key_snapshot = snapshot_affected_keys(&tx);
 
     // 写入新值
     write_kv_value(&tx, &payload.token_key, &payload.token_value)
@@ -302,12 +351,7 @@ pub fn switch_cli_account(
         .map_err(|e| format!("写入 device registration 失败: {e}"))?;
 
     // 清除其他优先级的旧 token key（与 Electron 版本一致）
-    let all_token_keys = vec![
-        "kirocli:social:token",
-        "kirocli:odic:token",
-        "codewhisperer:odic:token",
-    ];
-    for key in all_token_keys {
+    for key in ALL_CLI_TOKEN_KEYS {
         if key != payload.token_key {
             // 忽略删除失败（key 可能不存在）
             let _ = tx.execute("DELETE FROM auth_kv WHERE key = ?1", [key]);
@@ -318,8 +362,9 @@ pub fn switch_cli_account(
     tx.commit().map_err(|e| format!("提交事务失败: {e}"))?;
 
     Ok(KiroCliWriteBackup {
-        old_token: old_token.map(|v| (payload.token_key.clone(), v)),
-        old_device_reg: old_device_reg.map(|v| (payload.device_reg_key.clone(), v)),
+        key_snapshot,
+        old_token: None,
+        old_device_reg: None,
         backup_time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
     })
 }
@@ -447,15 +492,28 @@ pub fn rollback_cli_switch(db_path: &str, backup: &KiroCliWriteBackup) -> Result
         .transaction()
         .map_err(|e| format!("无法开启事务: {e}"))?;
 
-    // 恢复 token
-    if let Some((key, value)) = &backup.old_token {
-        write_kv_value(&tx, key, value).map_err(|e| format!("恢复 token 失败: {e}"))?;
+    // 先删光所有受影响的 key（token + device_reg），抹掉切号写入/残留的状态，再从快照
+    // 精确还原。只写回旧值而不删新键的老做法，会让切号新写的 token/device_reg（快照里
+    // 没有）残留在库里。
+    for key in ALL_CLI_TOKEN_KEYS.iter().chain(ALL_CLI_DEVICE_REG_KEYS.iter()) {
+        let _ = tx.execute("DELETE FROM auth_kv WHERE key = ?1", [key]);
     }
 
-    // 恢复 device registration
-    if let Some((key, value)) = &backup.old_device_reg {
+    // 从完整快照恢复切号前的每一个键（token 兄弟 + device_reg）
+    for (key, value) in &backup.key_snapshot {
         write_kv_value(&tx, key, value)
-            .map_err(|e| format!("恢复 device registration 失败: {e}"))?;
+            .map_err(|e| format!("从快照恢复 {key} 失败: {e}"))?;
+    }
+
+    // 向后兼容：历史 backup 可能只有 old_token/old_device_reg 而无 key_snapshot
+    if backup.key_snapshot.is_empty() {
+        if let Some((key, value)) = &backup.old_token {
+            write_kv_value(&tx, key, value).map_err(|e| format!("恢复 token 失败: {e}"))?;
+        }
+        if let Some((key, value)) = &backup.old_device_reg {
+            write_kv_value(&tx, key, value)
+                .map_err(|e| format!("恢复 device registration 失败: {e}"))?;
+        }
     }
 
     tx.commit().map_err(|e| format!("提交回滚事务失败: {e}"))?;
@@ -673,5 +731,97 @@ mod tests {
             std::env::temp_dir().join(format!("kam_cli_missing_{}.sqlite3", uuid::Uuid::new_v4()));
         let result = logout_cli_account(&missing.to_string_lossy());
         assert!(result.is_err(), "数据库不存在应返回 Err");
+    }
+
+    fn read_kv(db_path: &str, key: &str) -> Option<String> {
+        let conn = Connection::open(db_path).expect("open db");
+        read_kv_value(&conn, key).ok()
+    }
+
+    #[test]
+    fn auth_method_derived_from_token_key_not_payload_fields() {
+        // M3：odic token 即使 payload 缺 scopes，也应判成 IdC（靠 key），
+        // 否则落到 "unknown" → 不加载 device-registration → 无法刷新。
+        let db = make_temp_db();
+        // odic token，payload 只有 access/refresh，无 scopes、无 profile_arn
+        insert_kv(
+            &db,
+            "kirocli:odic:token",
+            "{\"access_token\":\"a\",\"refresh_token\":\"r\"}",
+        );
+        let conn = Connection::open(&db).expect("open");
+        let account = read_token_from_db(&conn, "kirocli:odic:token").expect("read token");
+        assert_eq!(account.auth_method, "IdC", "odic key 应判为 IdC 而非 unknown");
+
+        // social token，payload 缺 profile_arn，也应靠 key 判成 social
+        insert_kv(
+            &db,
+            "kirocli:social:token",
+            "{\"access_token\":\"a\",\"refresh_token\":\"r\"}",
+        );
+        let social = read_token_from_db(&conn, "kirocli:social:token").expect("read social");
+        assert_eq!(social.auth_method, "social", "social key 应判为 social");
+
+        drop(conn);
+        let _ = std::fs::remove_file(&db);
+    }
+
+    #[test]
+    fn rollback_restores_sibling_token_deleted_by_cross_type_switch() {
+        // 跨类型切换的回滚回归测试（H1）：库里原本是 social token，切到 IdC（写 odic
+        // token + 删 social token）后回滚，必须完整还原——social token 恢复、切号新写的
+        // odic token 被清除。旧实现只写回目标两键，会丢 social token 且残留 odic token。
+        let db = make_temp_db();
+        insert_kv(&db, "kirocli:social:token", "{\"orig\":\"social\"}");
+        insert_kv(
+            &db,
+            "kirocli:social:device-registration",
+            "{\"reg\":\"old\"}",
+        );
+
+        let payload = KiroCliSwitchPayload {
+            token_key: "kirocli:odic:token".to_string(),
+            token_value: "{\"new\":\"idc\"}".to_string(),
+            device_reg_key: "kirocli:odic:device-registration".to_string(),
+            device_reg_value: "{\"reg\":\"new\"}".to_string(),
+        };
+
+        let backup = switch_cli_account(&db, &payload).expect("switch ok");
+
+        // 切号后：odic 新值写入、social 兄弟 token 被删
+        assert_eq!(read_kv(&db, "kirocli:odic:token").as_deref(), Some("{\"new\":\"idc\"}"));
+        assert!(read_kv(&db, "kirocli:social:token").is_none(), "切号应删除 social token");
+
+        // 切号还新写了 odic device-registration（切号前不存在）
+        assert_eq!(
+            read_kv(&db, "kirocli:odic:device-registration").as_deref(),
+            Some("{\"reg\":\"new\"}")
+        );
+
+        rollback_cli_switch(&db, &backup).expect("rollback ok");
+
+        // 回滚后：social token 完整恢复，切号新写的 odic token 被清除
+        assert_eq!(
+            read_kv(&db, "kirocli:social:token").as_deref(),
+            Some("{\"orig\":\"social\"}"),
+            "回滚应恢复被删的 social token"
+        );
+        assert!(
+            read_kv(&db, "kirocli:odic:token").is_none(),
+            "回滚应清除切号新写的 odic token"
+        );
+        // 切号前存在的 social device-registration 应原样恢复
+        assert_eq!(
+            read_kv(&db, "kirocli:social:device-registration").as_deref(),
+            Some("{\"reg\":\"old\"}"),
+            "回滚应恢复切号前的 social device-registration"
+        );
+        // 切号新写的 odic device-registration（快照里没有）应被清除，不能残留
+        assert!(
+            read_kv(&db, "kirocli:odic:device-registration").is_none(),
+            "回滚应清除切号新写的 odic device-registration"
+        );
+
+        let _ = std::fs::remove_file(&db);
     }
 }

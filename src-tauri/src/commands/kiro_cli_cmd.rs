@@ -24,13 +24,40 @@ fn expand_home_dir(path: &str) -> Result<String, String> {
     }
 }
 
+/// 解析 IdC 账号的「有效 start_url」：优先用 token 顶层自带的，缺失则回退到
+/// clientSecret JWT 里的 `initiateLoginUri`（与添加路径同源）。统一规范化去尾斜杠。
+///
+/// 真实 kiro-cli 的 Enterprise IdC token 顶层**常常不带** start_url —— 真值藏在
+/// device-registration 的 client_secret JWT 里。所以 provider 判定必须用这个兜底后的
+/// 值，否则 Enterprise 会被误判成 BuilderId（issue #119）。
+fn resolve_effective_start_url(cli_account: &crate::kiro::cli::KiroCliAccount) -> Option<String> {
+    cli_account
+        .start_url
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            cli_account
+                .client_secret
+                .as_deref()
+                .and_then(extract_start_url_from_client_secret)
+        })
+        .map(|s| normalize_start_url(&s))
+}
+
 /// 从 CLI 账号判断 provider
 ///
-/// IdC 账号靠 token 自带的 start_url 区分 BuilderId 与 Enterprise（与前端 JSON 导入
-/// 同源逻辑）：start_url 缺失或就是 BuilderId 默认值（view.awsapps.com/start）→ BuilderId，
-/// 否则是企业自己的 d-xxx 域名 → Enterprise。这样导入的 Enterprise 账号才能保留正确
-/// 的 provider，切回 IDE 时算出正确的 clientIdHash（issue #119）。
-fn determine_provider(cli_account: &crate::kiro::cli::KiroCliAccount) -> String {
+/// IdC 账号靠**有效 start_url**（token 顶层或 clientSecret JWT 兜底后的值）区分
+/// BuilderId 与 Enterprise（与前端 JSON 导入同源逻辑）：start_url 缺失或就是 BuilderId
+/// 默认值（view.awsapps.com/start）→ BuilderId，否则是企业自己的 d-xxx 域名 →
+/// Enterprise。这样导入的 Enterprise 账号才能保留正确的 provider，切回 IDE 时算出
+/// 正确的 clientIdHash（issue #119）。
+///
+/// `effective_start_url` 由 `resolve_effective_start_url` 预先解析好传入——必须在此
+/// 之前完成 JWT 兜底，否则顶层不带 start_url 的 Enterprise token 会被误判为 BuilderId。
+fn determine_provider(
+    cli_account: &crate::kiro::cli::KiroCliAccount,
+    effective_start_url: Option<&str>,
+) -> String {
     if cli_account.auth_method == "social" {
         // Social Login，通过 profile_arn 判断
         if let Some(ref arn) = cli_account.profile_arn {
@@ -43,8 +70,8 @@ fn determine_provider(cli_account: &crate::kiro::cli::KiroCliAccount) -> String 
         return "Unknown".to_string();
     }
 
-    // IdC：用 start_url 区分 BuilderId / Enterprise
-    match cli_account.start_url.as_deref().map(str::trim) {
+    // IdC：用有效 start_url 区分 BuilderId / Enterprise
+    match effective_start_url.map(str::trim) {
         Some(url) if !url.is_empty() && !crate::commands::common::is_builder_id_start_url(url) => {
             "Enterprise".to_string()
         }
@@ -52,19 +79,26 @@ fn determine_provider(cli_account: &crate::kiro::cli::KiroCliAccount) -> String 
     }
 }
 
-/// 检查账号是否已存在
+/// 检查账号是否已存在。
+///
+/// 复用 `common::find_existing_account_idx`：user_id 优先，缺失时回退 refresh_token。
+/// 以前只按 user_id 匹配、user_id 为 None 直接返回 None，导致 userId 为空的账号
+/// （部分 BuilderId/Enterprise，API 只回 email 或都不回）每次导入都被当新账号，
+/// 重复堆积（M5）。
 fn find_existing_account(
     accounts: &[Account],
     user_id: Option<&String>,
-    _email: Option<&String>,
+    email: Option<&String>,
+    provider: &str,
+    refresh_token: &str,
 ) -> Option<usize> {
-    if let Some(uid) = user_id {
-        return accounts
-            .iter()
-            .position(|a| a.user_id.as_ref() == Some(uid));
-    }
-
-    None
+    crate::commands::common::find_existing_account_idx(
+        accounts,
+        email,
+        provider,
+        refresh_token,
+        user_id,
+    )
 }
 
 /// 创建账号标签
@@ -177,7 +211,10 @@ pub async fn import_from_kiro_cli(
     eprintln!("[Kiro CLI Import] 读取到账号: auth_method={auth_method}, token_key={token_key}");
 
     // 2. 调用统一的 getUsageLimits API 获取配额
-    let provider = determine_provider(cli_account);
+    // 先解析有效 start_url（含 JWT 兜底），provider 判定必须基于它，否则顶层不带
+    // start_url 的 Enterprise token 会被误判成 BuilderId，绕过 #119 硬校验。
+    let effective_start_url = resolve_effective_start_url(cli_account);
+    let provider = determine_provider(cli_account, effective_start_url.as_deref());
     let account_machine_id = {
         let store = lock_account_store(&state.store)?;
         store
@@ -223,7 +260,13 @@ pub async fn import_from_kiro_cli(
 
     // 3. 检查账号是否已存在
     let mut store = lock_account_store(&state.store)?;
-    let existing_index = find_existing_account(&store.accounts, user_id.as_ref(), email.as_ref());
+    let existing_index = find_existing_account(
+        &store.accounts,
+        user_id.as_ref(),
+        email.as_ref(),
+        &provider,
+        &cli_account.refresh_token,
+    );
     let is_new = existing_index.is_none();
 
     // 4. 创建或更新 Account
@@ -246,7 +289,13 @@ pub async fn import_from_kiro_cli(
     // 5. 填充字段
     account.access_token = Some(cli_account.access_token.clone());
     account.refresh_token = Some(cli_account.refresh_token.clone());
-    account.expires_at.clone_from(&cli_account.expires_at);
+    // kiro-cli DB 里的 expires_at 是 RFC3339（UTC），内部过期判断只认 %Y/%m/%d %H:%M:%S。
+    // 原样拷贝会让导入账号永远被判为已过期、每次访问强制刷新，这里统一规范化。
+    // 无法解析时留空，交由 token 刷新流程按需重建，而非写入必然被判过期的脏格式。
+    account.expires_at = cli_account
+        .expires_at
+        .as_deref()
+        .and_then(crate::commands::common::normalize_expires_at);
     account.provider = Some(provider.clone());
     account.user_id = user_id;
     account.region = Some(cli_account.region.clone());
@@ -264,21 +313,10 @@ pub async fn import_from_kiro_cli(
         account.client_id.clone_from(&cli_account.client_id);
         account.client_secret.clone_from(&cli_account.client_secret);
 
-        // start_url：优先用 token 自带的，缺失则回退到 clientSecret JWT（与添加路径同源）。
-        // 切回 IDE 时要靠它算出正确的 clientIdHash —— Enterprise 必须是自己的 d-xxx 域名。
-        // 统一 normalize_start_url 去尾斜杠（JWT 那条已在真相源规范化，token 那条这里兜底），
-        // 保证落进 account.start_url 的永远是无斜杠规范形。
-        let start_url = cli_account
-            .start_url
-            .clone()
-            .filter(|s| !s.trim().is_empty())
-            .or_else(|| {
-                cli_account
-                    .client_secret
-                    .as_deref()
-                    .and_then(extract_start_url_from_client_secret)
-            })
-            .map(|s| normalize_start_url(&s));
+        // start_url：复用 provider 判定时已解析好的有效值（token 顶层 → clientSecret JWT
+        // 兜底，已 normalize 去尾斜杠）。切回 IDE 时靠它算正确的 clientIdHash —— Enterprise
+        // 必须是自己的 d-xxx 域名。与 provider 判定同源，避免两处解析漂移（issue #119）。
+        let start_url = effective_start_url.clone();
 
         // clientIdHash：走统一裁决点，Enterprise 在此硬校验（issue #119）。导入数据被污染
         // （Enterprise 缺 start_url / 落到 BuilderId 默认值）时直接返回结构化失败，不写坏数据。
@@ -511,7 +549,11 @@ fn build_switch_payload(
             "kirocli:odic:device-registration",
             "IdC",
         ),
-        "Google" | "Github" => (
+        // "Unknown" 只可能来自 social 路径（determine_provider 的 IdC 分支只会返回
+        // BuilderId/Enterprise，绝不返回 Unknown），即 profile_arn 未能细分 google/github
+        // 的 social 账号。social 切号只需 social token + profile_arn，不真正区分子类型，
+        // 因此按 social 处理即可，否则这类账号导入成功却切不回 CLI（M4）。
+        "Google" | "Github" | "Unknown" => (
             "kirocli:social:token",
             "kirocli:social:device-registration",
             "social",
@@ -627,7 +669,11 @@ fn build_switch_payload(
 
 #[cfg(test)]
 mod tests {
-    use super::lock_account_store;
+    use super::{
+        build_switch_payload, determine_provider, lock_account_store, resolve_effective_start_url,
+    };
+    use crate::core::account::Account;
+    use crate::kiro::cli::KiroCliAccount;
     use std::sync::Mutex;
 
     #[test]
@@ -640,5 +686,57 @@ mod tests {
 
         let err = lock_account_store(&mutex).expect_err("poisoned mutex should return error");
         assert!(err.contains("store lock"));
+    }
+
+    fn idc_account(start_url: Option<&str>, client_secret: Option<&str>) -> KiroCliAccount {
+        KiroCliAccount {
+            access_token: "a".into(),
+            refresh_token: "r".into(),
+            profile_arn: None,
+            region: "us-east-1".into(),
+            expires_at: None,
+            scopes: Some(vec!["sso:account:access".into()]),
+            auth_method: "IdC".into(),
+            token_key: "kirocli:odic:token".into(),
+            client_id: None,
+            client_secret: client_secret.map(String::from),
+            start_url: start_url.map(String::from),
+        }
+    }
+
+    #[test]
+    fn determine_provider_uses_jwt_fallback_start_url_for_enterprise() {
+        // H2：token 顶层不带 start_url，但 effective start_url（JWT 兜底后）是企业域名，
+        // 应判为 Enterprise 而非误判 BuilderId。
+        let acc = idc_account(None, None);
+        assert_eq!(
+            determine_provider(&acc, Some("https://d-90660ceab3.awsapps.com/start")),
+            "Enterprise",
+            "有效 start_url 为企业域名时应判 Enterprise"
+        );
+        // 无任何 start_url 时才回落 BuilderId
+        assert_eq!(determine_provider(&acc, None), "BuilderId");
+    }
+
+    #[test]
+    fn resolve_effective_start_url_prefers_top_level_then_normalizes() {
+        // 顶层带 start_url（含尾斜杠）→ 规范化去斜杠
+        let acc = idc_account(Some("https://d-x.awsapps.com/start/"), None);
+        assert_eq!(
+            resolve_effective_start_url(&acc).as_deref(),
+            Some("https://d-x.awsapps.com/start")
+        );
+        // 顶层空白 → 无 client_secret 兜底 → None
+        let empty = idc_account(Some("   "), None);
+        assert_eq!(resolve_effective_start_url(&empty), None);
+    }
+
+    #[test]
+    fn build_switch_payload_treats_unknown_provider_as_social() {
+        // M4：provider "Unknown"（social 未细分 google/github）应按 social 切号，不报错。
+        let mut acc = Account::new("u@example.com".into(), "label".into());
+        acc.provider = Some("Unknown".into());
+        let payload = build_switch_payload(&acc).expect("Unknown 应按 social 切号");
+        assert_eq!(payload.token_key, "kirocli:social:token");
     }
 }

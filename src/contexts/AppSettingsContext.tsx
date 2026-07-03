@@ -91,11 +91,11 @@ export function AppSettingsProvider({ children }: { children: ReactNode }) {
   const updateSettings = async (updates: Partial<AppSettings>) => {
     try {
       await invoke('save_app_settings', { settings: updates })
-      let nextSettings: AppSettings | null = null
-      setSettings(prev => {
-        nextSettings = { ...(prev || DEFAULT_SETTINGS), ...updates }
-        return nextSettings
-      })
+      // 先同步算出合并后的完整值再 setState：以前在异步更新器回调里给 nextSettings
+      // 赋值，但 return 早于回调执行，永远返回 null，导致所有走此函数的开关都误报
+      // "保存失败"（尽管后端已保存成功）。
+      const nextSettings: AppSettings = { ...(settings || DEFAULT_SETTINGS), ...updates }
+      setSettings(nextSettings)
       return nextSettings
     } catch (err) {
       console.error('[AppSettings] 保存失败:', err)
