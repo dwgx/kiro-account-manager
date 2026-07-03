@@ -789,7 +789,9 @@ pub async fn check_kiro_config_files(
         }
 
         // 如果是 IdC 账号，还需检查 client registration 文件
-        if auth_method == "idc" {
+        // 注意：全代码库 IdC 标识恒为 "IdC"（见 auth/providers/idc.rs），
+        // 用大小写不敏感比较以兼容前端可能传入的任意大小写变体
+        if auth_method.eq_ignore_ascii_case("idc") {
             if let Some(hash) = client_id_hash {
                 let client_file = cache_dir.join(format!("{}.json", hash));
                 if !client_file.exists() {
