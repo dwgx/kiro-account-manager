@@ -117,6 +117,38 @@ fn create_account_label(
     }
 }
 
+/// 用可拿到的身份信息构造账号，email/userId 缺失也不阻断导入。
+///
+/// email/userId 只能从配额 API 响应（getUsageLimits）里取，而部分账号——尤其
+/// Enterprise IdC——的响应根本不带 `userInfo`。旧逻辑在两者都缺失时直接返回
+/// “无法获取账号标识”硬失败，使这些账号永远无法从 kiro-cli 导入。
+///
+/// 身份字段主要用于**展示**；去重另有 refresh_token 兜底（`find_existing_account_idx`），
+/// 不依赖它们。因此缺失时与在线登录（`auth_cmd::resolve_idc_login_email`）对齐、回退到
+/// 占位标识照常建账号：
+/// - 有 email → 普通账号；
+/// - 无 email 有 userId → Enterprise 账号（email=None，用 userId 标识）；
+/// - 两者都无 → Enterprise 建 email=None 的账号（靠 user_id/refresh_token 识别），
+///   其余 provider 用 `"{provider}_account"` 占位 email。
+fn build_account_identity(
+    email: Option<&str>,
+    user_id: Option<&str>,
+    provider: &str,
+    label: String,
+) -> Account {
+    if let Some(e) = email {
+        Account::new(e.to_string(), label)
+    } else if let Some(uid) = user_id {
+        Account::new_enterprise(uid.to_string(), label)
+    } else {
+        let mut acc = Account::new(format!("{provider}_account"), label);
+        if provider == "Enterprise" {
+            acc.email = None;
+        }
+        acc
+    }
+}
+
 fn lock_account_store<T>(mutex: &Mutex<T>) -> Result<MutexGuard<'_, T>, String> {
     mutex
         .lock()
@@ -239,6 +271,11 @@ pub async fn import_from_kiro_cli(
     let (email, user_id, usage_data, is_banned, is_auth_error) = match usage_result {
         Ok(result) => {
             let (email, user_id) = extract_user_info(&result.usage_data);
+            // 用 log:: 而非 eprintln!，让身份提取结果落进 app.log，便于事后排查
+            // （Enterprise 配额 API 常返回 userInfo:null，email/userId 均为 None 属正常）。
+            log::info!(
+                "[Kiro CLI Import] 身份提取: provider={provider}, email={email:?}, user_id={user_id:?}"
+            );
             (
                 email,
                 user_id,
@@ -273,18 +310,7 @@ pub async fn import_from_kiro_cli(
     let existing_account = existing_index.and_then(|idx| store.accounts.get(idx));
     let label = create_account_label(is_new, &cli_account.token_key, existing_account);
 
-    let mut account = if let Some(e) = email.clone() {
-        Account::new(e, label)
-    } else if let Some(uid) = user_id.clone() {
-        Account::new_enterprise(uid, label)
-    } else {
-        return Ok(KiroCliImportResult {
-            success: false,
-            is_new: false,
-            account: None,
-            error: Some("无法获取账号标识（email 或 userId）".to_string()),
-        });
-    };
+    let mut account = build_account_identity(email.as_deref(), user_id.as_deref(), &provider, label);
 
     // 5. 填充字段
     account.access_token = Some(cli_account.access_token.clone());
@@ -670,7 +696,8 @@ fn build_switch_payload(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_switch_payload, determine_provider, lock_account_store, resolve_effective_start_url,
+        build_account_identity, build_switch_payload, determine_provider, lock_account_store,
+        resolve_effective_start_url,
     };
     use crate::core::account::Account;
     use crate::kiro::cli::KiroCliAccount;
@@ -702,6 +729,30 @@ mod tests {
             client_secret: client_secret.map(String::from),
             start_url: start_url.map(String::from),
         }
+    }
+
+    #[test]
+    fn build_account_identity_falls_back_when_no_email_or_user_id() {
+        // 回归：配额 API 不返回 userInfo（email/userId 均缺失）时，导入不应失败，
+        // 而是按 provider 回退到占位标识建账号。
+
+        // Enterprise：无 email/userId → email=None，靠 refresh_token/后续刷新识别
+        let ent = build_account_identity(None, None, "Enterprise", "L".into());
+        assert_eq!(ent.email, None, "Enterprise 缺身份时 email 应为 None");
+        assert_eq!(ent.user_id, None);
+
+        // 其余 provider：无 email/userId → 占位 email "{provider}_account"
+        let bid = build_account_identity(None, None, "BuilderId", "L".into());
+        assert_eq!(bid.email.as_deref(), Some("BuilderId_account"));
+
+        // 有 email → 普通账号
+        let with_email = build_account_identity(Some("u@e.com"), None, "Google", "L".into());
+        assert_eq!(with_email.email.as_deref(), Some("u@e.com"));
+
+        // 无 email 有 userId → Enterprise 账号，用 userId 标识
+        let with_uid = build_account_identity(None, Some("uid-1"), "Enterprise", "L".into());
+        assert_eq!(with_uid.email, None);
+        assert_eq!(with_uid.user_id.as_deref(), Some("uid-1"));
     }
 
     #[test]
