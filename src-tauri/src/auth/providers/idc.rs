@@ -197,7 +197,13 @@ fn spawn_callback_listener(
             }
 
             if start.elapsed() > timeout {
-                if let Some(tx) = tx.lock().expect("Failed to acquire callback lock").take() {
+                // 锁中毒时恢复 guard 而非 panic(M5):锁保护的只是回调 Sender 的 Option 槽,
+                // 恢复后照常取用,避免一次 panic 永久毒化锁导致后续 IdC 登录全 panic。
+                if let Some(tx) = tx
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take()
+                {
                     let _ = tx.send(Err("授权超时".to_string()));
                 }
                 break;
@@ -210,7 +216,12 @@ fn spawn_callback_listener(
                 if url.starts_with("/oauth/callback") {
                     let result = handle_oauth_callback(request, &state);
 
-                    if let Some(tx) = tx.lock().expect("Failed to acquire callback lock").take() {
+                    // 锁中毒时恢复 guard 而非 panic(M5),见上方超时分支注释。
+                    if let Some(tx) = tx
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .take()
+                    {
                         let _ = tx.send(result.map(|code| (code, state.clone())));
                     }
                     break;

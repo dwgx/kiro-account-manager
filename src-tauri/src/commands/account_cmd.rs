@@ -1814,7 +1814,15 @@ pub async fn refresh_all_expiring_tokens(
     let mut tasks = Vec::new();
 
     for account in accounts_to_refresh {
-        let permit = semaphore.clone().acquire_owned().await.unwrap();
+        // acquire_owned 仅在 semaphore 被关闭时才失败；这里永不 close，但也不能因它
+        // panic 掉整个批量刷新命令（M4）。拿不到许可就跳过这个账号，继续其余的。
+        let permit = match semaphore.clone().acquire_owned().await {
+            Ok(permit) => permit,
+            Err(_) => {
+                log::error!("Batch refresh: semaphore closed, skipping remaining accounts");
+                break;
+            }
+        };
         let account_clone = account.clone();
 
         let task = tokio::spawn(async move {
@@ -1826,9 +1834,23 @@ pub async fn refresh_all_expiring_tokens(
         tasks.push(task);
     }
 
-    // 等待所有任务完成
+    // 等待所有任务完成。单个子任务 panic 不能拖垮整条批量刷新命令（M4）：
+    // JoinError 记一条失败、继续处理其余任务，而不是 unwrap 直接 panic 整个命令线程。
     for task in tasks {
-        let (account, result) = task.await.unwrap();
+        let (account, result) = match task.await {
+            Ok(pair) => pair,
+            Err(join_err) => {
+                log::error!("Batch refresh: refresh task panicked/aborted: {join_err}");
+                failed += 1;
+                results.push(RefreshResultItem {
+                    id: String::new(),
+                    email: None,
+                    success: false,
+                    message: format!("刷新任务异常终止: {join_err}"),
+                });
+                continue;
+            }
+        };
         let email_display = account
             .email
             .as_deref()

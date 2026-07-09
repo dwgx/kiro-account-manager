@@ -1,13 +1,47 @@
 // Token 凭证 JSON 视图组件
 import { useState, useRef, useEffect, useMemo } from 'react'
-import { Copy, Check, ChevronDown, Key, Clock } from 'lucide-react'
+import { Copy, Check, ChevronDown, Key, Eye, EyeOff } from 'lucide-react'
 import { useApp } from '../../../hooks/useApp'
 import { getThemeAccent } from '../KiroConfig/themeAccent'
+
+// H3：敏感字段名(大小写不敏感,兼容前端 camelCase 与后端 snake_case)。
+// 默认对这些字段脱敏,避免完整凭据被动明文进入 DOM / 被一键复制。
+const SENSITIVE_KEYS = new Set([
+  'accesstoken', 'access_token',
+  'refreshtoken', 'refresh_token',
+  'idtoken', 'id_token',
+  'clientsecret', 'client_secret',
+  'password',
+])
+
+function isSensitiveKey(key: string): boolean {
+  return SENSITIVE_KEYS.has(key.toLowerCase())
+}
+
+// 把一个敏感字符串脱敏成"前 6 位 + ••••"（空值返回原值）
+function maskSecret(value: string): string {
+  if (!value) return value
+  if (value.length <= 6) return '••••••'
+  return `${value.slice(0, 6)}••••••`
+}
 
 // 构建凭证 JSON 对象（直接使用整个账号对象）
 function buildCredentialsJson(account) {
   // 直接返回整个账号对象，让后端的序列化逻辑处理
   return account
+}
+
+// 生成用于展示/复制的对象:reveal=false 时把顶层敏感字段脱敏。
+// 只处理顶层字符串字段(账号凭据都在顶层),嵌套对象原样保留。
+function applyMask(account, reveal: boolean) {
+  if (reveal || !account || typeof account !== 'object') return account
+  const out: any = Array.isArray(account) ? [...account] : { ...account }
+  for (const [key, value] of Object.entries(out)) {
+    if (isSensitiveKey(key) && typeof value === 'string') {
+      out[key] = maskSecret(value)
+    }
+  }
+  return out
 }
 
 // 可折叠的字符串值
@@ -85,11 +119,15 @@ export function TokenJsonView({ account, defaultExpanded = false }) {
   }), [])
   const [expanded, setExpanded] = useState(defaultExpanded)
   const [copied, setCopied] = useState(false)
+  // H3：默认脱敏,用户显式点击"显示"才展示/复制完整凭据。
+  const [reveal, setReveal] = useState(false)
   const copiedTimerRef = useRef(null)
-  
+
   const credentialsJson = useMemo(() => buildCredentialsJson(account), [account])
-  const jsonStr = useMemo(() => JSON.stringify(credentialsJson, null, 2), [credentialsJson])
-  
+  // 展示与复制都基于脱敏后的视图:reveal=false 时敏感字段被掩码,复制出去的也是掩码值。
+  const maskedJson = useMemo(() => applyMask(credentialsJson, reveal), [credentialsJson, reveal])
+  const jsonStr = useMemo(() => JSON.stringify(maskedJson, null, 2), [maskedJson])
+
   useEffect(() => () => copiedTimerRef.current && clearTimeout(copiedTimerRef.current), [])
   
   const handleCopy = () => {
@@ -113,9 +151,19 @@ export function TokenJsonView({ account, defaultExpanded = false }) {
           </span>
         </div>
         <div className="flex items-center gap-2">
-          <button 
-            type="button" 
+          {/* H3：显示/隐藏敏感凭据切换,默认隐藏 */}
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); setReveal(r => !r) }}
+            title={reveal ? '隐藏敏感凭据' : '显示敏感凭据'}
+            className="text-xs text-muted-foreground hover:text-foreground px-2 py-1 rounded hover:bg-muted/50 transition-colors"
+          >
+            {reveal ? <EyeOff size={13} /> : <Eye size={13} />}
+          </button>
+          <button
+            type="button"
             onClick={(e) => { e.stopPropagation(); handleCopy() }}
+            title={reveal ? '复制(含完整凭据)' : '复制(敏感字段已脱敏)'}
             className="text-xs text-muted-foreground hover:text-foreground px-2 py-1 rounded hover:bg-muted/50 transition-colors"
           >
             {copied ? <Check size={13} className="text-green-500" /> : <Copy size={13} />}
@@ -123,11 +171,11 @@ export function TokenJsonView({ account, defaultExpanded = false }) {
           <ChevronDown size={14} className={`text-muted-foreground transition-transform duration-200 ${expanded ? '' : '-rotate-90'}`} />
         </div>
       </div>
-      
+
       {expanded && (
         <div className="px-6 pb-4">
           <div className="p-3 rounded-lg bg-muted/20 border border-border max-h-64 overflow-auto font-mono text-xs leading-relaxed">
-            <JsonRenderer json={credentialsJson} colors={colors} accent={accent} />
+            <JsonRenderer json={maskedJson} colors={colors} accent={accent} />
           </div>
         </div>
       )}

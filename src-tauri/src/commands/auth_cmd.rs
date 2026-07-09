@@ -250,6 +250,11 @@ async fn login_social(
     let _ = lock_store(&state.auth.user, "auth user").map(|mut u| *u = Some(user));
     let _ = lock_store(&state.auth.access_token, "auth access_token")
         .map(|mut t| *t = Some(token_result.access_token));
+    // 与 IdC / callback 走的 update_auth_state 对齐:social 登录也要把 refresh_token
+    // 写进 state.auth(M7)。此前只写 user + access_token,导致登录后任何依赖
+    // auth.refresh_token 的逻辑在 social 路径下拿到旧值/空值。
+    let _ = lock_store(&state.auth.refresh_token, "auth refresh_token")
+        .map(|mut t| *t = Some(token_result.refresh_token));
 
     *lock_store(&state.pending_login, "pending_login")? = None;
 

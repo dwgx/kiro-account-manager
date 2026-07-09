@@ -157,11 +157,22 @@ export function useAccounts() {
   const handleExport = useCallback(async (selectedIds: string[] = []) => {
     try {
       if (selectedIds.length === 0) return
-      
-      const { save } = await import('@tauri-apps/plugin-dialog')
+
+      const { save, confirm } = await import('@tauri-apps/plugin-dialog')
       const { writeTextFile } = await import('@tauri-apps/plugin-fs')
       const { downloadDir } = await import('@tauri-apps/api/path')
-      
+
+      // H4:导出的 JSON 含明文凭据(access/refresh/id_token、client_secret、password)。
+      // 落盘前弹窗告警并要求确认,避免用户在不知情下把明文凭据写到普通文件里。
+      const proceed = await confirm(
+        `即将导出 ${selectedIds.length} 个账号到明文 JSON 文件。\n\n` +
+          '该文件将包含完整的登录凭据(access token、refresh token、client secret、密码等),' +
+          '任何能读取此文件的人都能登录这些账号。\n\n' +
+          '请妥善保管,勿上传到不受信任的位置。确定继续导出?',
+        { title: '导出含明文凭据', kind: 'warning' }
+      )
+      if (!proceed) return
+
       const defaultName = `kiro-accounts-${selectedIds.length}-${new Date().toISOString().slice(0, 10)}.json`
       const defaultDir = await downloadDir()
       const sep = defaultDir.includes('\\') ? '\\' : '/'

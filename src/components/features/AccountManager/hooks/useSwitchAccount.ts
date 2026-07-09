@@ -72,6 +72,14 @@ export function useSwitchAccount(onLocalTokenChange) {
     setSwitchDialog(null)
     setSwitchingId(account.id)
 
+    // M20：保存 CLI 切号返回的全量快照(KiroCliWriteBackup)。CLI 切号本身在后端是单事务
+    // 原子写(成功即已一致，失败会自动回滚，无需前端补救)，但切号成功后前端还要跑一段
+    // 配额解析/展示逻辑——那段一旦抛错会跳到 catch 显示"切换失败"，而 CLI 其实已切好，
+    // 造成"提示失败但实际已切"的假失败。这里留存快照，在 catch 里回滚已成功的 CLI 切号，
+    // 让失败提示与实际状态一致。
+    let cliSwitchBackup: any = null
+    let cliSwitchDbPath: string | null = null
+
     // 退出登录分支：login 写入登录态，logout 删除登录态。无需检测 IDE 安装/刷新 token，
     // 后端命令对"本来就没登录"幂等返回成功。
     if (mode === 'logout') {
@@ -174,7 +182,9 @@ export function useSwitchAccount(onLocalTokenChange) {
         try {
           const cliPath = await invoke<string>('get_kiro_cli_default_path')
           if (cliPath) {
-            await invoke('switch_to_cli_account', { accountId: refreshedAccount.id, dbPath: cliPath })
+            // 留存 db 路径与返回的回滚快照(M20)，供后续展示逻辑抛错时回滚这次已成功的切号
+            cliSwitchDbPath = cliPath
+            cliSwitchBackup = await invoke('switch_to_cli_account', { accountId: refreshedAccount.id, dbPath: cliPath })
           }
         } catch (e) {
           console.warn('[Switch] CLI 切号失败:', e)
@@ -257,6 +267,17 @@ export function useSwitchAccount(onLocalTokenChange) {
         message,
         account: null})
     } catch (e) {
+      // M20：若 CLI 切号已成功、但之后的步骤(如配额解析/展示)抛错跳到这里，
+      // 回滚这次 CLI 切号，避免"提示失败但 CLI 实际已切"的不一致状态。
+      // IDE 切号是最后一步之一且失败即抛错(不会走到这套展示逻辑)，故只需回滚 CLI。
+      if (cliSwitchBackup && cliSwitchDbPath) {
+        try {
+          await invoke('rollback_cli_switch', { dbPath: cliSwitchDbPath, backup: cliSwitchBackup })
+          console.warn('[Switch] 后续步骤失败，已回滚 CLI 切号')
+        } catch (rollbackErr) {
+          console.error('[Switch] CLI 切号回滚失败:', rollbackErr)
+        }
+      }
       setSwitchDialog({
         type: 'error',
         title: t('switch.failed'),

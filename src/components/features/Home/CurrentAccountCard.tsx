@@ -103,36 +103,20 @@ function TokenDetailPopover({ localToken, colors, t }: TokenDetailPopoverProps) 
   return (
     <Card className="absolute left-16 top-0 w-72 z-50 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 pointer-events-none shadow-xl">
       <CardContent className="p-3 space-y-2">
+        {/* H3：只展示前 12 位前缀,不再用 tooltip 悬浮泄露完整 token。
+            完整 access/refresh token 属敏感凭据,不应仅靠 hover 就明文进入 DOM。 */}
         <div className="flex justify-between items-center">
           <span className={`text-xs text-muted-foreground`}>Access Token</span>
-          <TooltipProvider>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span className={`text-xs font-mono truncate text-muted-foreground max-w-[140px] cursor-help`}>
-                  {localToken.accessToken?.substring(0, 12)}...
-                </span>
-              </TooltipTrigger>
-              <TooltipContent>
-                <p className="font-mono text-xs">{localToken.accessToken}</p>
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
+          <span className={`text-xs font-mono truncate text-muted-foreground max-w-[140px]`}>
+            {localToken.accessToken ? `${localToken.accessToken.substring(0, 12)}••••••` : '-'}
+          </span>
         </div>
 
         <div className="flex justify-between items-center">
           <span className={`text-xs text-muted-foreground`}>Refresh Token</span>
-          <TooltipProvider>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span className={`text-xs font-mono truncate text-muted-foreground max-w-[140px] cursor-help`}>
-                  {localToken.refreshToken?.substring(0, 12)}...
-                </span>
-              </TooltipTrigger>
-              <TooltipContent>
-                <p className="font-mono text-xs">{localToken.refreshToken}</p>
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
+          <span className={`text-xs font-mono truncate text-muted-foreground max-w-[140px]`}>
+            {localToken.refreshToken ? `${localToken.refreshToken.substring(0, 12)}••••••` : '-'}
+          </span>
         </div>
 
         {localToken.authMethod === 'IdC' ? (

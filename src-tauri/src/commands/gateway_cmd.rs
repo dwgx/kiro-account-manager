@@ -141,6 +141,57 @@ pub struct ProxyClientConfigResult {
     pub error: Option<String>,
 }
 
+/// 每个被配置文件最多保留的 `.kiro-backup-*` 备份数量。
+/// 备份含旧凭据(api_key 等),旧实现每次配置都新建一份、从不清理,长期在
+/// ~/.claude、~/.codex 里堆积明文凭据副本(M19)。这里在生成新备份后按修改时间
+/// 只保留最近若干份,其余删除,收敛凭据留存面。
+const MAX_KIRO_BACKUPS: usize = 3;
+
+/// 备份 `path` 到 `<path>.kiro-backup-<timestamp>`,并清理同前缀的旧备份,
+/// 只保留最近 `MAX_KIRO_BACKUPS` 份。返回本次新建的备份路径。
+/// 清理是尽力而为:删旧备份失败不影响主流程(不返回错误)。
+fn backup_and_prune(path: &std::path::Path) -> Result<String, String> {
+    let timestamp = chrono::Local::now().format("%Y%m%d%H%M%S");
+    let backup_path = format!("{}.kiro-backup-{}", path.display(), timestamp);
+    std::fs::copy(path, &backup_path).map_err(|e| format!("备份失败: {}", e))?;
+
+    prune_old_backups(path);
+    Ok(backup_path)
+}
+
+/// 删除 `path` 同目录下同前缀(`<file_name>.kiro-backup-`)的旧备份,只留最近 N 份。
+fn prune_old_backups(path: &std::path::Path) {
+    let Some(dir) = path.parent() else { return };
+    let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
+        return;
+    };
+    let prefix = format!("{}.kiro-backup-", file_name);
+
+    let Ok(read_dir) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut backups: Vec<std::path::PathBuf> = read_dir
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with(&prefix))
+        })
+        .collect();
+
+    if backups.len() <= MAX_KIRO_BACKUPS {
+        return;
+    }
+
+    // 文件名后缀是 %Y%m%d%H%M%S 时间戳,字典序即时间序;升序后删掉最旧的、留最新 N 份。
+    backups.sort();
+    let remove_count = backups.len() - MAX_KIRO_BACKUPS;
+    for old in backups.into_iter().take(remove_count) {
+        let _ = std::fs::remove_file(&old);
+    }
+}
+
 /// 配置 Claude Code: ~/.claude/settings.json
 fn configure_claude_code(proxy_origin: &str, api_key: &str) -> Result<Vec<String>, String> {
     let home = std::env::var("USERPROFILE")
@@ -166,16 +217,10 @@ fn configure_claude_code(proxy_origin: &str, api_key: &str) -> Result<Vec<String
         std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
     }
 
-    // 备份原文件
+    // 备份原文件(并清理旧备份,M19)
     let mut written_paths = Vec::new();
     if path.exists() {
-        let backup_path = format!(
-            "{}.kiro-backup-{}",
-            path.display(),
-            chrono::Local::now().format("%Y%m%d%H%M%S")
-        );
-        std::fs::copy(path, &backup_path).map_err(|e| format!("备份失败: {}", e))?;
-        written_paths.push(backup_path);
+        written_paths.push(backup_and_prune(path)?);
     }
 
     // 读取或创建配置
@@ -228,17 +273,24 @@ fn configure_codex(openai_base_url: &str, api_key: &str) -> Result<Vec<String>, 
     std::fs::create_dir_all(&codex_dir).map_err(|e| format!("创建 .codex 目录失败: {}", e))?;
 
     let mut written_paths = Vec::new();
-    let timestamp = chrono::Local::now().format("%Y%m%d%H%M%S");
 
     // 1. 写入 auth.json
     if auth_path.exists() {
-        let backup = format!("{}.kiro-backup-{}", auth_path.display(), timestamp);
-        std::fs::copy(&auth_path, &backup).map_err(|e| format!("备份 auth.json 失败: {}", e))?;
+        backup_and_prune(&auth_path)?;
     }
 
+    // M18:旧实现对已存在文件的读/解析错误一律 unwrap_or_default 吞掉,退化成 {} 再
+    // 覆盖写——用户 auth.json 里的其它 key 会被静默丢弃。改为:读失败直接报错(绝不基于
+    // 空内容覆盖);仅当文件为空/纯空白时才当作 {},非空但解析失败也报错让用户先修复。
     let mut auth: serde_json::Value = if auth_path.exists() {
-        let content = std::fs::read_to_string(&auth_path).unwrap_or_default();
-        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+        let content = std::fs::read_to_string(&auth_path)
+            .map_err(|e| format!("读取 auth.json 失败(已备份,未覆盖): {}", e))?;
+        if content.trim().is_empty() {
+            serde_json::json!({})
+        } else {
+            serde_json::from_str(&content)
+                .map_err(|e| format!("解析 auth.json 失败(已备份,未覆盖,请先修复该文件): {}", e))?
+        }
     } else {
         serde_json::json!({})
     };
@@ -257,13 +309,14 @@ fn configure_codex(openai_base_url: &str, api_key: &str) -> Result<Vec<String>, 
 
     // 2. 写入 config.toml
     if config_path.exists() {
-        let backup = format!("{}.kiro-backup-{}", config_path.display(), timestamp);
-        std::fs::copy(&config_path, &backup)
-            .map_err(|e| format!("备份 config.toml 失败: {}", e))?;
+        backup_and_prune(&config_path)?;
     }
 
+    // M18:读失败时旧实现吞成 ""，则 build_codex_config_toml 会重建一个只含 custom
+    // section 的 config.toml，静默抹掉用户原有全部配置。改为读失败直接报错、不覆盖。
     let existing_toml = if config_path.exists() {
-        std::fs::read_to_string(&config_path).unwrap_or_default()
+        std::fs::read_to_string(&config_path)
+            .map_err(|e| format!("读取 config.toml 失败(已备份,未覆盖): {}", e))?
     } else {
         String::new()
     };
