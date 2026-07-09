@@ -3,6 +3,13 @@
 所有重要的变更都会记录在这个文件中。
 
 
+### [1.9.6](https://github.com/hj01857655/kiro-account-manager/compare/v1.9.5...v1.9.6) (2026-07-09)
+
+
+### 🐛 Bug 修复
+
+* 修复 10 个非网关问题(凭据安全/健壮性/CLI 配置) ([40ded63](https://github.com/hj01857655/kiro-account-manager/commit/40ded632177f21df1fa243e4cc206ccf9dd24902))
+
 ### [1.9.5](https://github.com/hj01857655/kiro-account-manager/compare/v1.9.3...v1.9.5) (2026-07-03)
 
 
