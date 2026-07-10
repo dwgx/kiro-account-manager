@@ -1,12 +1,19 @@
 import { useState, useEffect, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { invoke } from '@tauri-apps/api/core'
-import { Copy, Check, Folder, Plus, X, RefreshCw, Loader2, CheckCircle, Network, PlugZap, Tag } from 'lucide-react'
+import { Check, Folder, Plus, X, RefreshCw, Loader2, Network, PlugZap, Tag } from 'lucide-react'
 import { useApp } from '../../../hooks/useApp'
 import { useDialog } from '../../../contexts/DialogContext'
 import { setAccountTags, setAccountGroup, getGroups, addGroup } from '../../../api/groupTag'
 import { getAccountDisplayName } from '../../../utils/accountStats'
 import { TagSelector } from './GroupTagManager'
+import { AccountStatusCard } from './AccountStatusCard'
+import { AccountCredentialFields } from './AccountCredentialFields'
+import {
+  normalizeProxyConfig,
+  normalizeProxyForSave,
+  parseProxyUrl,
+} from './utils/proxyConfig'
 import {
   DialogRoot,
   DialogContent,
@@ -130,53 +137,6 @@ interface AccountProxyTestResult {
   latencyMs: number;
   status?: number | null;
   message: string;
-}
-
-const defaultProxyConfig = (): AccountProxyConfig => ({
-  enabled: false,
-  protocol: 'http',
-  host: '',
-  port: 0,
-  username: null,
-  password: null
-})
-
-const normalizeProxyConfig = (value?: AccountProxyConfig | null): AccountProxyConfig => ({
-  ...defaultProxyConfig(),
-  ...value,
-  protocol: value?.protocol === 'socks5' ? 'socks5' : 'http',
-  host: value?.host || '',
-  port: Number(value?.port || 0),
-  username: value?.username || null,
-  password: value?.password || null
-})
-
-const normalizeProxyForSave = (value: AccountProxyConfig): AccountProxyConfig => ({
-  ...value,
-  host: value.host.trim(),
-  port: Number(value.port || 0),
-  username: value.username?.trim() || null,
-  password: value.password || null
-})
-
-const parseProxyUrl = (value: string): AccountProxyConfig => {
-  const raw = value.trim()
-  const url = new URL(raw.includes('://') ? raw : `http://${raw}`)
-  const protocol: AccountProxyProtocol = url.protocol.startsWith('socks') ? 'socks5' : 'http'
-  const port = Number(url.port)
-
-  if (!url.hostname || !Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new Error('invalid proxy')
-  }
-
-  return {
-    enabled: true,
-    protocol,
-    host: url.hostname,
-    port,
-    username: url.username ? decodeURIComponent(url.username) : null,
-    password: url.password ? decodeURIComponent(url.password) : null
-  }
 }
 
 function EditAccountModal({ account, onClose, onSuccess }: EditAccountModalProps) {
@@ -440,196 +400,17 @@ function EditAccountModal({ account, onClose, onSuccess }: EditAccountModalProps
           {/* Scrollable Body */}
           <div className="flex-1 overflow-y-auto p-6 space-y-6">
           {/* 当前账号状态 */}
-          {accountInfo && (
-            <div className={`p-4 rounded-xl border space-y-3 ${accent.subtleBg} border-primary/10`}>
-              <div className="flex items-center justify-between border-b border-primary/10 pb-2">
-                <span className="text-sm font-semibold text-foreground/80">当前账号状态</span>
-                <div className="px-2.5 py-0.5 rounded-full bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 text-xs font-medium flex items-center gap-1.5">
-                  <CheckCircle size={14} />
-                  已验证
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-4 text-sm">
-                <div>
-                  <span className="text-muted-foreground text-xs block mb-1">邮箱</span>
-                  <span className="font-medium font-mono text-xs truncate block" title={accountInfo.email}>
-                    {accountInfo.email}
-                  </span>
-                </div>
-                <div>
-                  <span className="text-muted-foreground text-xs block mb-1">订阅计划</span>
-                  <span className="font-medium">{accountInfo.subscriptionType}</span>
-                </div>
-                <div>
-                  <span className="text-muted-foreground text-xs block mb-1">使用额度</span>
-                  <span className="font-medium">
-                    {accountInfo.usage.current.toLocaleString()} / {accountInfo.usage.limit.toLocaleString()}
-                  </span>
-                </div>
-                <div>
-                  <span className="text-muted-foreground text-xs block mb-1">重置时间</span>
-                  <span className="font-medium">{accountInfo.resetTime ?? '-'}</span>
-                </div>
-              </div>
-            </div>
-          )}
+          {accountInfo && <AccountStatusCard accountInfo={accountInfo} accent={accent} />}
 
-          {/* 账号别名 */}
-          <div>
-            <label className={`block text-sm font-medium text-foreground mb-2`}>
-              {t('accounts.remark')}
-            </label>
-            <input
-              type="text"
-              placeholder={t('editAccount.labelPlaceholder')}
-              value={form.label}
-              onChange={(e) => setForm({ ...form, label: e.target.value })}
-              className={`w-full px-4 py-3 border rounded-xl text-sm text-foreground bg-background border-input ${colors.inputFocus} focus:ring-2 outline-none`}
-            />
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <label className={`block text-sm font-medium text-foreground mb-2`}>
-                添加时间
-              </label>
-              <input
-                type="text"
-                placeholder="YYYY/MM/DD HH:mm:ss"
-                value={form.addedAt}
-                onChange={(e) => setForm({ ...form, addedAt: e.target.value })}
-                className={`w-full px-4 py-3 border rounded-xl text-sm text-foreground bg-background border-input ${colors.inputFocus} focus:ring-2 outline-none font-mono`}
-              />
-            </div>
-            <div>
-              <label className={`block text-sm font-medium text-foreground mb-2`}>
-                Token 到期时间
-              </label>
-              <input
-                type="text"
-                placeholder="YYYY/MM/DD HH:mm:ss"
-                value={form.expiresAt}
-                onChange={(e) => setForm({ ...form, expiresAt: e.target.value })}
-                className={`w-full px-4 py-3 border rounded-xl text-sm text-foreground bg-background border-input ${colors.inputFocus} focus:ring-2 outline-none font-mono`}
-              />
-            </div>
-          </div>
-
-          {/* Access Token */}
-          <div>
-            <label className={`block text-sm font-medium text-foreground mb-2`}>
-              Access Token
-            </label>
-            <div className="relative">
-              <textarea
-                placeholder="access token"
-                value={form.accessToken}
-                onChange={(e) => setForm({ ...form, accessToken: e.target.value })}
-                rows={3}
-                className={`w-full px-4 py-3 pr-10 border rounded-xl text-sm text-foreground bg-background border-input ${colors.inputFocus} focus:ring-2 resize-none outline-none font-mono`}
-              />
-              <button
-                onClick={() => handleCopy(form.accessToken, 'accessToken')}
-                className={`absolute right-3 top-3 p-1.5 rounded-lg hover:bg-muted/50 cursor-pointer`}
-                title={copiedField === 'accessToken' ? '已复制' : '复制'}
-              >
-                {copiedField === 'accessToken' ? <Check size={16} className="text-green-500" /> : <Copy size={16} className={"text-muted-foreground"} />}
-              </button>
-            </div>
-          </div>
-
-          {/* Refresh Token */}
-          <div>
-            <label className={`block text-sm font-medium text-foreground mb-2`}>
-              Refresh Token {isIdCAccount && <span className="text-destructive">*</span>}
-            </label>
-            <div className="relative">
-              <textarea
-                placeholder="aorAAAAA..."
-                value={form.refreshToken}
-                onChange={(e) => setForm({ ...form, refreshToken: e.target.value })}
-                rows={3}
-                className={`w-full px-4 py-3 pr-10 border rounded-xl text-sm text-foreground bg-background border-input ${colors.inputFocus} focus:ring-2 resize-none outline-none font-mono`}
-              />
-              <button
-                onClick={() => handleCopy(form.refreshToken, 'refreshToken')}
-                className={`absolute right-3 top-3 p-1.5 rounded-lg hover:bg-muted/50 cursor-pointer`}
-                title={copiedField === 'refreshToken' ? '已复制' : '复制'}
-              >
-                {copiedField === 'refreshToken' ? <Check size={16} className="text-green-500" /> : <Copy size={16} className={"text-muted-foreground"} />}
-              </button>
-            </div>
-          </div>
-
-          {/* Machine ID */}
-          <div>
-            <label className={`block text-sm font-medium text-foreground mb-2`}>
-              {t('addAccount.machineId')}
-            </label>
-            <div className="relative">
-              <input
-                type="text"
-                placeholder={t('addAccount.machineIdPlaceholder')}
-                value={form.machineId}
-                onChange={(e) => setForm({ ...form, machineId: e.target.value })}
-                className={`w-full px-4 py-3 pr-10 border rounded-xl text-sm text-foreground bg-background border-input ${colors.inputFocus} focus:ring-2 outline-none`}
-              />
-              <button
-                onClick={() => handleCopy(form.machineId, 'machineId')}
-                className={`absolute right-3 top-1/2 -translate-y-1/2 p-1.5 rounded-lg hover:bg-muted/50 cursor-pointer`}
-                title={copiedField === 'machineId' ? '已复制' : '复制'}
-              >
-                {copiedField === 'machineId' ? <Check size={16} className="text-green-500" /> : <Copy size={16} className={"text-muted-foreground"} />}
-              </button>
-            </div>
-          </div>
-
-          {isIdCAccount && (
-            <>
-              <div>
-                <label className={`block text-sm font-medium text-foreground mb-2`}>
-                  Client ID <span className="text-destructive">*</span>
-                </label>
-                <div className="relative">
-                  <input
-                    type="text"
-                    placeholder="刷新 Token 需要"
-                    value={form.clientId}
-                    onChange={(e) => setForm({ ...form, clientId: e.target.value })}
-                    className={`w-full px-4 py-3 pr-10 border rounded-xl text-sm text-foreground bg-background border-input ${colors.inputFocus} focus:ring-2 outline-none font-mono`}
-                  />
-                  <button
-                    onClick={() => handleCopy(form.clientId, 'clientId')}
-                    className={`absolute right-3 top-1/2 -translate-y-1/2 p-1.5 rounded-lg hover:bg-muted/50 cursor-pointer`}
-                    title={copiedField === 'clientId' ? '已复制' : '复制'}
-                  >
-                    {copiedField === 'clientId' ? <Check size={16} className="text-green-500" /> : <Copy size={16} className={"text-muted-foreground"} />}
-                  </button>
-                </div>
-              </div>
-              <div>
-                <label className={`block text-sm font-medium text-foreground mb-2`}>
-                  Client Secret <span className="text-destructive">*</span>
-                </label>
-                <div className="relative">
-                  <textarea
-                    placeholder="刷新 Token 需要"
-                    value={form.clientSecret}
-                    onChange={(e) => setForm({ ...form, clientSecret: e.target.value })}
-                    rows={2}
-                    className={`w-full px-4 py-3 pr-10 border rounded-xl text-sm text-foreground bg-background border-input ${colors.inputFocus} focus:ring-2 resize-none outline-none font-mono`}
-                  />
-                  <button
-                    onClick={() => handleCopy(form.clientSecret, 'clientSecret')}
-                    className={`absolute right-3 top-3 p-1.5 rounded-lg hover:bg-muted/50 cursor-pointer`}
-                    title={copiedField === 'clientSecret' ? '已复制' : '复制'}
-                  >
-                    {copiedField === 'clientSecret' ? <Check size={16} className="text-green-500" /> : <Copy size={16} className={"text-muted-foreground"} />}
-                  </button>
-                </div>
-              </div>
-            </>
-          )}
+          <AccountCredentialFields
+            form={form}
+            onFormChange={(patch) => setForm(prev => ({ ...prev, ...patch }))}
+            handleCopy={handleCopy}
+            copiedField={copiedField}
+            isIdCAccount={isIdCAccount}
+            colors={colors}
+            t={t}
+          />
 
           {/* 验证并刷新按钮 */}
           <Button
