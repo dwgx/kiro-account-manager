@@ -3,6 +3,15 @@
 所有重要的变更都会记录在这个文件中。
 
 
+### [1.9.8](https://github.com/hj01857655/kiro-account-manager/compare/v1.9.7...v1.9.8) (2026-07-11)
+
+
+### 🐛 Bug 修复
+
+* Enterprise 取 usage 从 profileArn 解析真实 region ([d69612d](https://github.com/hj01857655/kiro-account-manager/commit/d69612dc82cf3882f1a5a0a2186cb085d6f0c225))
+* ListAvailableProfiles 固定打 us-east-1（修非 us-east-1 号 400） ([0c80390](https://github.com/hj01857655/kiro-account-manager/commit/0c80390fa51be661eada98561c5ae1a4dc156ef6))
+* 企业 IdC 号导入失效 + 补 external_idp 刷新链路 + 修 SSRF ([1c4d69e](https://github.com/hj01857655/kiro-account-manager/commit/1c4d69e954de16c48fbe079ac5b441c46dddbbcf))
+
 ### [1.9.7](https://github.com/hj01857655/kiro-account-manager/compare/v1.9.6...v1.9.7) (2026-07-11)
 
 
