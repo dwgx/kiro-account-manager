@@ -40,10 +40,13 @@ impl DeepLinkCallbackWaiter {
 
     /// 等待回调结果
     pub fn wait_for_callback(&self) -> Result<OAuthCallbackResult, String> {
+        // 锁中毒时恢复 guard 而非 panic(M5):这些锁保护的只是一个 Option 槽,
+        // 持锁线程 panic 不会破坏其内部不变量,直接取回数据继续即可。否则一次 panic
+        // 会永久毒化该锁,让此后所有 login/deep_link 全部 panic 直到重启应用。
         let rx = self
             .result_rx
             .lock()
-            .expect("Failed to acquire result_rx lock")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
             .ok_or("Callback channel already consumed")?;
 
@@ -67,9 +70,10 @@ pub fn register_waiter(state: &str) -> DeepLinkCallbackWaiter {
 
     // 存储发送端
     let storage = PENDING_SENDER.get_or_init(|| Mutex::new(None));
+    // 锁中毒时恢复 guard 而非 panic(M5),见 wait_for_callback 注释。
     let mut guard = storage
         .lock()
-        .expect("Failed to acquire pending sender lock");
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some((_state, previous_tx)) = guard.take() {
         let _ = previous_tx.send(Err("登录已取消".to_string()));
     }
@@ -86,9 +90,10 @@ pub fn cancel_waiter() -> bool {
         return false;
     };
 
+    // 锁中毒时恢复 guard 而非 panic(M5),见 wait_for_callback 注释。
     let mut guard = storage
         .lock()
-        .expect("Failed to acquire pending sender lock");
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some((_state, tx)) = guard.take() else {
         return false;
     };
@@ -126,9 +131,10 @@ pub fn handle_deep_link(url: &str) -> (bool, bool) {
         return (false, false);
     };
 
+    // 锁中毒时恢复 guard 而非 panic(M5),见 wait_for_callback 注释。
     let mut guard = storage
         .lock()
-        .expect("Failed to acquire pending sender lock");
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some((expected_state, tx)) = guard.take() else {
         log::warn!("[deep_link] No pending login waiter");
         return (false, false);

@@ -81,23 +81,33 @@ pub async fn restart_as_admin(app: tauri::AppHandle) -> Result<(), String> {
 
         let exe_path = std::env::current_exe().map_err(|e| format!("获取程序路径失败: {e}"))?;
 
-        // 使用 PowerShell 的 Start-Process -Verb RunAs 以管理员权限启动
-        let _status = Command::new("powershell")
+        // 使用 PowerShell 的 Start-Process -Verb RunAs 以管理员权限启动。
+        // M13:旧实现 spawn 后硬睡 500ms 就无条件 app.exit(0)——若用户在 UAC 弹窗点了
+        // "否"(或提权延迟),提权进程从未起来,旧进程却已退出,应用直接消失(假死)。
+        // 改用阻塞 output():Start-Process(不带 -Wait)会在提权进程一启动就返回,UAC 被
+        // 拒绝时会抛出终止错误使 PowerShell 非零退出。据此确认提权成功后再退旧进程,
+        // 失败则原样返回错误、不退出,让用户可重试。
+        let output = Command::new("powershell")
             .args([
                 "-NoProfile",
                 "-Command",
                 &format!(
-                    "Start-Process -FilePath '{}' -Verb RunAs",
+                    "$ErrorActionPreference='Stop'; Start-Process -FilePath '{}' -Verb RunAs",
                     exe_path.display().to_string().replace('\'', "''")
                 ),
             ])
-            .spawn()
+            .output()
             .map_err(|e| format!("启动管理员进程失败: {e}"))?;
 
-        // 等待一小段时间确保新进程启动
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!(
+                "以管理员权限启动失败(可能是取消了 UAC 提权): {}",
+                stderr.trim()
+            ));
+        }
 
-        // 退出当前应用
+        // 提权进程已确认启动,再退出当前进程。
         app.exit(0);
         Ok(())
     }
@@ -108,16 +118,27 @@ pub async fn restart_as_admin(app: tauri::AppHandle) -> Result<(), String> {
 
         let exe_path = std::env::current_exe().map_err(|e| format!("获取程序路径失败: {e}"))?;
 
-        // 尝试使用 pkexec
-        let result = Command::new("pkexec").arg(&exe_path).spawn();
+        // 尝试使用 pkexec。pkexec 会作为提权进程的父进程一直存活(不能用阻塞 output()
+        // 等它,那会挂到 app 退出),所以 spawn 后短暂 try_wait 探测:若 polkit 授权被取消,
+        // pkexec 会很快以非零码退出——此时不退出旧进程,返回错误让用户重试(M13)。
+        let mut child = match Command::new("pkexec").arg(&exe_path).spawn() {
+            Ok(child) => child,
+            Err(_) => {
+                return Err("请使用 sudo 或 pkexec 手动以 root 权限运行程序".to_string());
+            }
+        };
 
-        match result {
-            Ok(_) => {
-                std::thread::sleep(std::time::Duration::from_millis(500));
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        match child.try_wait() {
+            // 已退出且非成功 = 授权被取消 / 提权失败,别退当前进程
+            Ok(Some(status)) if !status.success() => {
+                Err("以管理员权限启动失败(可能是取消了授权),请重试或用 sudo 手动运行".to_string())
+            }
+            // 仍在运行(提权进程正常拉起,pkexec 作为父进程存活)= 成功,退出旧进程
+            _ => {
                 app.exit(0);
                 Ok(())
             }
-            Err(_) => Err("请使用 sudo 或 pkexec 手动以 root 权限运行程序".to_string()),
         }
     }
 

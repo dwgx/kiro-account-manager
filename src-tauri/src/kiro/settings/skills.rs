@@ -124,6 +124,45 @@ impl SkillsManager {
         Ok(())
     }
 
+    /// 校验用户传入的 git 分支名,防止把 `--upload-pack=...` 之类的选项或控制字符
+    /// 当作 `git clone --branch <arg>` 的参数注入(H7)。与 powers.rs::validate_branch_name
+    /// 保持同源规则:拒绝 `-` 开头、空白/NUL、git refname 非法字符及危险后缀。
+    fn validate_branch_name(branch: &str) -> Result<(), String> {
+        if branch.is_empty() {
+            return Ok(());
+        }
+        if branch.starts_with('-') {
+            return Err("分支名非法".to_string());
+        }
+        if branch.contains('\0')
+            || branch.contains(' ')
+            || branch.contains('\t')
+            || branch.contains('\n')
+            || branch.contains('\r')
+        {
+            return Err("分支名非法".to_string());
+        }
+        if branch.contains("..")
+            || branch.contains('~')
+            || branch.contains('^')
+            || branch.contains(':')
+            || branch.contains('?')
+            || branch.contains('*')
+            || branch.contains('\\')
+        {
+            return Err("分支名非法".to_string());
+        }
+        if branch.ends_with('.')
+            || branch.ends_with('/')
+            || branch.ends_with(".lock")
+            || branch.contains("@{")
+            || branch.contains("//")
+        {
+            return Err("分支名非法".to_string());
+        }
+        Ok(())
+    }
+
     fn safe_skill_dir(base_dir: &Path, name: &str) -> Result<PathBuf, String> {
         Self::validate_skill_name(name)?;
         let candidate = base_dir.join(name);
@@ -281,6 +320,7 @@ impl SkillsManager {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .unwrap_or("main");
+        Self::validate_branch_name(branch_name)?;
 
         let clone_result = Command::new("git")
             .args([
