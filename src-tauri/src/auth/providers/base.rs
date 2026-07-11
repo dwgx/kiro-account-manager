@@ -43,6 +43,10 @@ pub struct RefreshMetadata {
     pub profile_arn: Option<String>,
     pub machine_id: Option<String>,
     pub account: Option<Account>,
+    // external_idp（微软 / Azure AD）专用
+    pub token_endpoint: Option<String>,
+    pub issuer_url: Option<String>,
+    pub scopes: Option<String>,
 }
 
 /// 认证提供者接口

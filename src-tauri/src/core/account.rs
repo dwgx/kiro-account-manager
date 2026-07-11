@@ -202,6 +202,14 @@ pub struct Account {
     // Social 专用
     #[serde(default)]
     pub profile_arn: Option<String>,
+    // external_idp（微软 / Azure AD）专用：OAuth2 token 端点 / issuer / scopes。
+    // 刷新时据此 POST 到微软 token_endpoint，而非 AWS OIDC。alias 兼容下划线来源。
+    #[serde(default, alias = "token_endpoint")]
+    pub token_endpoint: Option<String>,
+    #[serde(default, alias = "issuer_url")]
+    pub issuer_url: Option<String>,
+    #[serde(default)]
+    pub scopes: Option<String>,
     // 原始 usage API 响应
     pub usage_data: Option<serde_json::Value>,
     // 分组
@@ -260,6 +268,9 @@ impl Account {
             id_token: None,
             start_url: None,
             profile_arn: None,
+            token_endpoint: None,
+            issuer_url: None,
+            scopes: None,
             usage_data: None,
             group_id: None,
             tag_links: Vec::new(),
@@ -298,6 +309,9 @@ impl Account {
             id_token: None,
             start_url: None,
             profile_arn: None,
+            token_endpoint: None,
+            issuer_url: None,
+            scopes: None,
             usage_data: None,
             group_id: None,
             tag_links: Vec::new(),

@@ -1,6 +1,8 @@
 // 公共工具函数 - 提取重复逻辑
 
-use crate::auth::providers::{AuthProvider, IdcProvider, RefreshMetadata, SocialProvider};
+use crate::auth::providers::{
+    AuthProvider, ExternalIdpProvider, IdcProvider, RefreshMetadata, SocialProvider,
+};
 use crate::commands::machine_guid::generate_random_machine_id;
 use crate::core::account::Account;
 use crate::utils::client_id_hash::calculate_client_id_hash;
@@ -390,12 +392,73 @@ pub struct UsageResult {
     pub is_auth_error: bool,
 }
 
+/// 判断账号是否为 external_idp（微软 / Azure AD）。
+///
+/// 口径与导入分类、KiroStudio 对齐：auth_method（大小写不敏感）命中
+/// external_idp / external-idp / externalidp / azure / azuread / azure_ad 即判定；
+/// 导入时我们落的是 "external_idp"，所以主要看 auth_method。为兜底历史/异常数据，
+/// 若带微软 token_endpoint / issuer_url 也视为 external_idp（这类凭据只可能是微软号，
+/// 且它们的 clientId/secret 是微软的，绝不能走 AWS OIDC 刷新）。
+fn is_external_idp_account(account: &Account) -> bool {
+    if let Some(method) = account.auth_method.as_deref() {
+        let m = method.trim();
+        if m.eq_ignore_ascii_case("external_idp")
+            || m.eq_ignore_ascii_case("external-idp")
+            || m.eq_ignore_ascii_case("externalidp")
+            || m.eq_ignore_ascii_case("azure")
+            || m.eq_ignore_ascii_case("azuread")
+            || m.eq_ignore_ascii_case("azure_ad")
+        {
+            return true;
+        }
+    }
+    account
+        .token_endpoint
+        .as_deref()
+        .is_some_and(|s| !s.trim().is_empty())
+        || account
+            .issuer_url
+            .as_deref()
+            .is_some_and(|s| !s.trim().is_empty())
+}
+
 async fn refresh_token_by_provider_inner(
     account: &Account,
     use_account_proxy: bool,
 ) -> Result<RefreshResult, String> {
-    let provider = account.provider.as_deref().unwrap_or("Google");
     let refresh_token = account.refresh_token.as_ref().ok_or("No refresh token")?;
+
+    // external_idp（微软/Azure AD）优先级最高：这类号带微软 clientId/secret + 微软
+    // token_endpoint，必须走 OAuth2 refresh_token grant POST 到微软；若落到下面的
+    // IdC 分支会打 oidc.*.amazonaws.com，AWS 不认微软 clientId → 400 invalid_request。
+    if is_external_idp_account(account) {
+        let metadata = RefreshMetadata {
+            client_id: account.client_id.clone(),
+            client_secret: account.client_secret.clone(),
+            region: account.region.clone(),
+            profile_arn: account.profile_arn.clone(),
+            token_endpoint: account.token_endpoint.clone(),
+            issuer_url: account.issuer_url.clone(),
+            scopes: account.scopes.clone(),
+            account: use_account_proxy.then(|| account.clone()),
+            ..Default::default()
+        };
+        let auth = ExternalIdpProvider::new()
+            .refresh_token(refresh_token, metadata)
+            .await?;
+        return Ok(RefreshResult {
+            access_token: auth.access_token,
+            refresh_token: Some(auth.refresh_token),
+            expires_in: auth.expires_in,
+            // profile_arn 原样保留（external_idp 号必须透传真实 arn）
+            profile_arn: auth.profile_arn,
+            id_token: auth.id_token,
+            sso_session_id: None,
+            machine_id: None,
+        });
+    }
+
+    let provider = account.provider.as_deref().unwrap_or("Google");
 
     if provider == "BuilderId" || provider == "Enterprise" {
         let metadata = RefreshMetadata {
@@ -610,6 +673,33 @@ pub fn calc_expires_at(expires_in: i64) -> String {
     let now = chrono::Local::now();
     let expires_at = now + chrono::Duration::seconds(expires_in);
     expires_at.format("%Y/%m/%d %H:%M:%S").to_string()
+}
+
+/// 把外部来源的 expires_at 规范化成内部统一格式 `%Y/%m/%d %H:%M:%S`（本地时区）。
+///
+/// 内部所有过期判断（`is_token_expired_within_seconds`）只认这个格式，解析失败一律
+/// 当作"已过期"。但导入来源（kiro-cli / IDE token）的 `expires_at` 可能是 RFC3339
+/// （带 'Z'，UTC），直接原样存进 `account.expires_at` 会让导入账号永远被判为已过期。
+///
+/// 这里统一入口：
+/// - 先按内部格式解析（已规范化的值原样返回，幂等）；
+/// - 再按 RFC3339 解析，转成本地时区后重新格式化；
+/// - 两者都失败返回 None（交由调用方决定回退策略，不再把脏格式写进 store）。
+pub fn normalize_expires_at(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    // 已经是内部格式：原样返回，保证幂等（避免重复导入时二次转换）
+    if chrono::NaiveDateTime::parse_from_str(trimmed, "%Y/%m/%d %H:%M:%S").is_ok() {
+        return Some(trimmed.to_string());
+    }
+    // RFC3339（导入 token 的常见格式，带时区）→ 转本地时区后重新格式化
+    chrono::DateTime::parse_from_rfc3339(trimmed).ok().map(|dt| {
+        dt.with_timezone(&chrono::Local)
+            .format("%Y/%m/%d %H:%M:%S")
+            .to_string()
+    })
 }
 
 /// 根据 `usage_result` 计算账号状态
