@@ -3,6 +3,20 @@
 所有重要的变更都会记录在这个文件中。
 
 
+### [1.9.7](https://github.com/hj01857655/kiro-account-manager/compare/v1.9.6...v1.9.7) (2026-07-11)
+
+
+### ✨ 新功能
+
+* 支持 external_idp(微软/Azure AD)账号导入 ([81e69f7](https://github.com/hj01857655/kiro-account-manager/commit/81e69f7771ed5cf6882bfc2d5d8939f48681583d))
+
+
+### ♻️ 代码重构
+
+* 拆分 10 个上帝文件为目录/多文件模块 ([f2a44ad](https://github.com/hj01857655/kiro-account-manager/commit/f2a44ad126ee4012e6c76085b332810a95adf600))
+* 拆分最后 9 个上帝文件(proxy/account_cmd/gateway-mod 等) ([f30557e](https://github.com/hj01857655/kiro-account-manager/commit/f30557e3e2ffc2738a4ec4f7f3342b8531e9a327))
+* 拆分前端 AccountDetailModal/EditAccountModal/gatewayPageUtils ([b0fbd80](https://github.com/hj01857655/kiro-account-manager/commit/b0fbd80911923a22722f25588dc1f6894dc9e51f))
+
 ### [1.9.6](https://github.com/hj01857655/kiro-account-manager/compare/v1.9.5...v1.9.6) (2026-07-09)
 
 
