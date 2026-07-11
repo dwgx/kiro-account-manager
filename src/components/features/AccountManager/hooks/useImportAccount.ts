@@ -223,7 +223,10 @@ export function useImportAccount({ onSuccess }: UseImportAccountOptions) {
             refreshToken: item.refreshToken,
             clientId: item.clientId,
             clientSecret: item.clientSecret,
-            region: item.region || null,
+            // IdC 刷新打 oidc.{region}.amazonaws.com，region 必须是 client 注册的 region。
+            // 优先 authRegion（如 eu-central-1）——只认 item.region 会漏掉、回退 us-east-1
+            // 去刷非 us-east-1 的 client → 400 invalid_request。
+            region: (item.authRegion ?? item.auth_region ?? item.region) || null,
             machineId: item.machineId || null,
             accessToken: item.accessToken || null,
             password: item.password || null,
@@ -291,7 +294,8 @@ export function useImportAccount({ onSuccess }: UseImportAccountOptions) {
             refreshToken: account.refreshToken,
             clientId: account.clientId,
             clientSecret: account.clientSecret,
-            region: account.region || null,
+            // 同 JSON 导入：优先 authRegion，避免非 us-east-1 的 client 刷新 400
+            region: (account.authRegion ?? account.auth_region ?? account.region) || null,
             machineId: null,
             accessToken: account.accessToken || null,
             password: null,

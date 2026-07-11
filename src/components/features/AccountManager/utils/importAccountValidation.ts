@@ -61,6 +61,12 @@ export function validateAccount(item: any, index: number) {
     return { valid: false, errors, type: null }
   }
 
+  // 企业号的 start_url 藏在 clientSecret 的 JWT payload（base64 编码，明文搜不到
+  // "initiateLoginUri"），且 region 常在 authRegion —— 前端无法可靠区分 BuilderId/Enterprise。
+  // 这里只做初判（有顶层 startUrl 才敢定 Enterprise），真正的判定交给后端：add_account_by_idc
+  // 会用 extract_start_url_from_client_secret 解码 JWT，提取到企业 start_url 就自动按企业号处理。
+  const clientSecret = pick(item, 'clientSecret', 'client_secret')
+
   let provider = item.provider
   if (!provider) {
     if (isSocial) {
@@ -68,7 +74,7 @@ export function validateAccount(item: any, index: number) {
       errors.push(`第 ${index + 1} 条: Social 账号必须指定 provider (Google/Github)`)
       return { valid: false, errors, type: null }
     } else {
-      // IdC 账号：通过 startUrl 判断是 Enterprise 还是 BuilderId
+      // 有顶层 startUrl → Enterprise；否则先按 BuilderId 传给后端，由后端解 JWT 纠正
       provider = item.startUrl ? 'Enterprise' : 'BuilderId'
     }
   }
@@ -90,13 +96,18 @@ export function validateAccount(item: any, index: number) {
     return { valid: false, errors, type: null }
   }
 
-  // Enterprise 账号必须提供 region 和 startUrl
+  // Enterprise 账号需要 region 和 startUrl，但真实 Kiro 企业号这两项常不在 JSON 顶层：
+  // region 在 authRegion、startUrl 在 clientSecret 的 JWT 里（后端会解码提取）。
+  // 因此放宽：region 接受 authRegion 兜底；只要有 clientSecret（后端能从中提 startUrl）
+  // 就不强制顶层 startUrl。
   if (normalizedProvider === 'Enterprise') {
-    if (!item.region || !item.region.trim()) {
-      errors.push(`第 ${index + 1} 条: Enterprise 账号必须提供 region 字段`)
+    const hasRegion = (item.region && item.region.trim()) || (item.authRegion && String(item.authRegion).trim()) || (item.auth_region && String(item.auth_region).trim())
+    if (!hasRegion) {
+      errors.push(`第 ${index + 1} 条: Enterprise 账号必须提供 region 或 authRegion 字段`)
       return { valid: false, errors, type: null }
     }
-    if (!item.startUrl || !item.startUrl.trim()) {
+    const hasStartUrl = (item.startUrl && item.startUrl.trim()) || (typeof clientSecret === 'string' && clientSecret.length > 0)
+    if (!hasStartUrl) {
       errors.push(`第 ${index + 1} 条: Enterprise 账号必须提供 startUrl 字段`)
       return { valid: false, errors, type: null }
     }
