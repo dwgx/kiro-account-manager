@@ -9,7 +9,7 @@ import {
 
 const autoRefresh = await readFile(new URL('../hooks/useAutoRefresh.ts', import.meta.url), 'utf8')
 const useAccounts = await readFile(new URL('../components/features/AccountManager/hooks/useAccounts.ts', import.meta.url), 'utf8')
-const importModal = await readFile(new URL('../components/features/AccountManager/ImportAccountModal.tsx', import.meta.url), 'utf8')
+const importModal = await readFile(new URL('../components/features/AccountManager/hooks/useImportAccount.ts', import.meta.url), 'utf8')
 
 const cappedAccount = {
   status: 'active',

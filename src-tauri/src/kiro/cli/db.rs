@@ -1,5 +1,8 @@
+use super::types::{
+    DeviceRegistration, KiroCliAccount, KiroCliAuthEntry, KiroCliDbSnapshot, KiroCliSwitchPayload,
+    KiroCliWriteBackup, TokenData,
+};
 use rusqlite::{Connection, Result as SqliteResult};
-use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 // ============================================================
@@ -21,88 +24,6 @@ const CLI_SOCIAL_START_URL: &str = "https://view.awsapps.com/start";
 
 /// CLI 2.0 默认 region
 const CLI_DEFAULT_REGION: &str = "us-east-1";
-
-/// Kiro CLI 账号数据
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct KiroCliAccount {
-    pub access_token: String,
-    pub refresh_token: String,
-    pub profile_arn: Option<String>,
-    pub region: String,
-    pub expires_at: Option<String>,
-    pub scopes: Option<Vec<String>>,
-    pub auth_method: String, // "social" 或 "IdC"
-    pub token_key: String,   // 记录来源键名
-    pub client_id: Option<String>,
-    pub client_secret: Option<String>,
-    /// IdC/SSO token 自带的 start_url（真实 kiro-cli token 里就有，
-    /// 用来区分 BuilderId 与 Enterprise，并还原正确的 clientIdHash）
-    pub start_url: Option<String>,
-}
-
-/// Device Registration 数据（仅 AWS SSO OIDC）
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct DeviceRegistration {
-    pub client_id: String,
-    pub client_secret: String,
-    pub region: String,
-}
-
-/// CLI 数据库完整快照（用于读取当前状态）
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct KiroCliDbSnapshot {
-    pub token_entries: Vec<KiroCliAuthEntry>,
-    pub device_registration: Option<DeviceRegistration>,
-    pub db_path: String,
-}
-
-/// CLI 认证条目（从 auth_kv 读取的原始记录）
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct KiroCliAuthEntry {
-    pub key: String,
-    pub value_json: String,
-    pub parsed_token: Option<TokenData>,
-}
-
-/// Token 数据（解析后的结构）
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct TokenData {
-    pub access_token: String,
-    pub refresh_token: String,
-    pub expires_at: Option<String>,
-    pub region: String,
-    pub start_url: Option<String>,
-    pub oauth_flow: Option<String>,
-    pub scopes: Option<Vec<String>>,
-}
-
-/// CLI 切号写入载荷（准备写入 DB 的目标记录）
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct KiroCliSwitchPayload {
-    pub token_key: String,
-    pub token_value: String,
-    pub device_reg_key: String,
-    pub device_reg_value: String,
-}
-
-/// 写入前的备份数据（用于回滚）。
-///
-/// 记录切号前**所有受影响 key 的完整快照**（3 个 token key + device_reg_key），而不仅是
-/// 目标两键。切号会写目标 token/device_reg 并 DELETE 其余兄弟 token key；只备份目标两键的
-/// 旧实现回滚时既不删新写入的键、也不恢复被删的兄弟键，跨类型切换（如 social→IdC）回滚后
-/// DB 停在错误状态、原 token 永久丢失。用全量快照可精确还原到切号前。
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct KiroCliWriteBackup {
-    /// 切号前所有受影响 key 的 (key, value) 快照。切号时存在的键才入表；
-    /// 回滚时先删光受影响 key 集合，再把本表原样写回，从而精确还原。
-    pub key_snapshot: Vec<(String, String)>,
-    // 保留旧字段以兼容历史序列化数据（前端目前不读，仅防旧 backup 反序列化失败）
-    #[serde(default)]
-    pub old_token: Option<(String, String)>,
-    #[serde(default)]
-    pub old_device_reg: Option<(String, String)>,
-    pub backup_time: String,
-}
 
 /// 从 kiro-cli 数据库读取账号
 pub fn read_kiro_cli_accounts(db_path: &str) -> Result<Vec<KiroCliAccount>, String> {
@@ -521,145 +442,6 @@ pub fn rollback_cli_switch(db_path: &str, backup: &KiroCliWriteBackup) -> Result
     Ok(())
 }
 
-// ============================================================
-// CLI 2.0 环境检测
-// ============================================================
-
-/// CLI 安装检测结果
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct CliInstallationInfo {
-    pub cli_installed: bool,
-    pub cli_path: Option<String>,
-    pub db_path: Option<String>,
-    pub db_exists: bool,
-}
-
-/// 检测 CLI 2.0 是否安装
-pub fn check_cli_installation() -> CliInstallationInfo {
-    let cli_path = detect_cli_executable();
-    let db_path = detect_cli_database();
-
-    let cli_installed = cli_path.is_some();
-    let db_exists = db_path
-        .as_ref()
-        .is_some_and(|p| std::path::Path::new(p).exists());
-
-    CliInstallationInfo {
-        cli_installed,
-        cli_path,
-        db_path,
-        db_exists,
-    }
-}
-
-/// 检测 CLI 可执行文件
-pub fn detect_cli_executable() -> Option<String> {
-    let candidates = get_cli_executable_paths();
-
-    for path in candidates {
-        if path.exists() {
-            return Some(path.to_string_lossy().to_string());
-        }
-    }
-
-    None
-}
-
-/// 获取 CLI 可执行文件候选路径
-fn get_cli_executable_paths() -> Vec<std::path::PathBuf> {
-    let mut paths = Vec::new();
-
-    if cfg!(target_os = "windows") {
-        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-            paths.push(
-                std::path::PathBuf::from(local_app_data)
-                    .join("Kiro-Cli")
-                    .join("kiro-cli.exe"),
-            );
-        }
-    } else if cfg!(target_os = "macos") {
-        if let Ok(home) = std::env::var("HOME") {
-            // macOS 可能的安装位置
-            paths.push(std::path::PathBuf::from("/usr/local/bin/kiro-cli"));
-            paths.push(
-                std::path::PathBuf::from(&home)
-                    .join("Library")
-                    .join("Application Support")
-                    .join("kiro-cli")
-                    .join("bin")
-                    .join("kiro-cli"),
-            );
-        }
-    } else {
-        // Linux
-        if let Ok(home) = std::env::var("HOME") {
-            paths.push(std::path::PathBuf::from("/usr/local/bin/kiro-cli"));
-            paths.push(std::path::PathBuf::from(&home).join(".local/bin/kiro-cli"));
-        }
-    }
-
-    paths
-}
-
-/// 检测 CLI 数据库
-pub fn detect_cli_database() -> Option<String> {
-    let candidates = get_cli_database_paths();
-
-    for path in &candidates {
-        if path.exists() {
-            return Some(path.to_string_lossy().to_string());
-        }
-    }
-
-    // 返回默认路径（即使不存在）
-    candidates.first().map(|p| p.to_string_lossy().to_string())
-}
-
-/// 获取 CLI 数据库候选路径
-fn get_cli_database_paths() -> Vec<std::path::PathBuf> {
-    let mut paths = Vec::new();
-
-    if cfg!(target_os = "windows") {
-        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-            paths.push(
-                std::path::PathBuf::from(local_app_data)
-                    .join("Kiro-Cli")
-                    .join("data.sqlite3"),
-            );
-        }
-    } else if cfg!(target_os = "macos") {
-        if let Ok(home) = std::env::var("HOME") {
-            paths.push(
-                std::path::PathBuf::from(&home)
-                    .join("Library")
-                    .join("Application Support")
-                    .join("kiro-cli")
-                    .join("data.sqlite3"),
-            );
-        }
-    } else {
-        // Linux
-        if let Ok(home) = std::env::var("HOME") {
-            if let Ok(xdg_data_home) = std::env::var("XDG_DATA_HOME") {
-                paths.push(
-                    std::path::PathBuf::from(xdg_data_home)
-                        .join("kiro-cli")
-                        .join("data.sqlite3"),
-                );
-            }
-            paths.push(
-                std::path::PathBuf::from(&home)
-                    .join(".local")
-                    .join("share")
-                    .join("kiro-cli")
-                    .join("data.sqlite3"),
-            );
-        }
-    }
-
-    paths
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -825,3 +607,4 @@ mod tests {
         let _ = std::fs::remove_file(&db);
     }
 }
+
