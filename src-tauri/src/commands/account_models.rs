@@ -277,7 +277,12 @@ pub async fn fetch_all_available_models(
     let resolved_profile_arn = if ctx.profile_arn.is_some() {
         ctx.profile_arn.clone()
     } else {
-        match client.list_available_profiles(access_token, &ctx.region).await {
+        // ListAvailableProfiles 固定打 us-east-1：Kiro 的 profile 是全局注册在 us-east-1 的，
+        // 不随账号 region 分布。实测非 us-east-1 的号（如 eu-central-1 Enterprise）用自身 region
+        // 打 management.<region>.kiro.dev 会返回空 []，导致 profileArn 恒 None、对话套 us-east-1
+        // 占位 ARN → region 与 arn 不符 → 400 Improperly formed。仅此发现步骤固定 us-east-1，
+        // 后续对话/用量仍按凭据/解析出的真实 region 走。
+        match client.list_available_profiles(access_token, "us-east-1").await {
             Ok(value) => {
                 let profiles: ListAvailableProfilesResponse = serde_json::from_value(value)
                     .map_err(|error| format!("解析 ListAvailableProfiles 响应失败: {error}"))?;
