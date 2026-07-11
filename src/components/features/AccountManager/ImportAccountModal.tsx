@@ -111,14 +111,18 @@ function validateAccount(item: any, index: number) {
     return { valid: false, errors, type: null }
   }
 
-  // Enterprise 账号必须提供 region 和 startUrl
+  // Enterprise 账号校验放宽：
+  // - region 接受 authRegion（企业号 region 常在 authRegion 而非顶层 region）
+  // - startUrl 不再强制：真实企业号 startUrl 藏在 clientSecret 的 JWT 里，后端会解码提取，
+  //   只要有 clientSecret 就不拦（clientId/clientSecret 前面已按 IdC 校验过）
   if (normalizedProvider === 'Enterprise') {
-    if (!item.region || !item.region.trim()) {
-      errors.push(`第 ${index + 1} 条: Enterprise 账号必须提供 region 字段`)
+    const enterpriseRegion = item.authRegion ?? item.auth_region ?? item.region
+    if (!enterpriseRegion || !String(enterpriseRegion).trim()) {
+      errors.push(`第 ${index + 1} 条: Enterprise 账号必须提供 region 字段（region 或 authRegion）`)
       return { valid: false, errors, type: null }
     }
-    if (!item.startUrl || !item.startUrl.trim()) {
-      errors.push(`第 ${index + 1} 条: Enterprise 账号必须提供 startUrl 字段`)
+    if ((!item.startUrl || !item.startUrl.trim()) && !item.clientSecret) {
+      errors.push(`第 ${index + 1} 条: Enterprise 账号必须提供 startUrl 或 clientSecret`)
       return { valid: false, errors, type: null }
     }
   }
@@ -331,7 +335,8 @@ function ImportAccountModal({ onClose, onSuccess, onNavigate }: ImportAccountMod
             refreshToken: item.refreshToken,
             clientId: item.clientId,
             clientSecret: item.clientSecret,
-            region: item.region || null,
+            // 企业 IdC 号 region 在 authRegion（不是顶层 region），漏读会存成 us-east-1 → 刷新打错 oidc host → 400
+            region: (item.authRegion ?? item.auth_region ?? item.region) || null,
             machineId: item.machineId || null,
             accessToken: item.accessToken || null,
             password: item.password || null,
@@ -399,7 +404,8 @@ function ImportAccountModal({ onClose, onSuccess, onNavigate }: ImportAccountMod
             refreshToken: account.refreshToken,
             clientId: account.clientId,
             clientSecret: account.clientSecret,
-            region: account.region || null,
+            // 企业 IdC 号 region 在 authRegion（不是顶层 region），漏读会存成 us-east-1 → 刷新打错 oidc host → 400
+            region: (account.authRegion ?? account.auth_region ?? account.region) || null,
             machineId: null,
             accessToken: account.accessToken || null,
             password: null,

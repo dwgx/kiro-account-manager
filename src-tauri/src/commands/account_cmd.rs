@@ -936,20 +936,36 @@ struct IdcAccountParams {
 /// 内部函数：添加 `IdC` 账号（BuilderId 或 Enterprise）
 async fn add_account_by_idc_internal(
     state: State<'_, AppState>,
-    params: IdcAccountParams,
+    mut params: IdcAccountParams,
 ) -> Result<AddAccountResult, String> {
-    let is_enterprise = params.provider_id == "Enterprise";
-
-    // 从 clientSecret JWT 中提取 startUrl（如果未提供）。
+    // 从 clientSecret JWT 中提取 startUrl（如果前端没显式传）。
+    // 关键：**不管前端判 BuilderId 还是 Enterprise 都尝试提取**。真实企业号的 startUrl
+    // 藏在 clientSecret 的 JWT payload（base64，明文搜不到 initiateLoginUri），前端无法
+    // 可靠区分，常把企业号误判成 BuilderId。这里用 extract_start_url_from_client_secret
+    // 正确解码 JWT，只要提取到 start_url，就说明它是真正的企业 IdC 号。
     // 两条来源都过 normalize_start_url 去尾斜杠：params.start_url 可能由前端带斜杠传入，
     // JWT 真相源虽已规范化，这里统一兜底，保证落进 account.start_url 的永远是无斜杠规范形。
     let start_url = if let Some(ref url) = params.start_url {
         Some(normalize_start_url(url))
-    } else if is_enterprise {
-        extract_start_url_from_client_secret(&params.client_secret)
     } else {
-        None
+        extract_start_url_from_client_secret(&params.client_secret)
     };
+
+    // 依据「实际拿到的 start_url」纠正 provider：前端可能误判 BuilderId，但只要 clientSecret
+    // 里解出了非 BuilderId 默认域的 start_url，就是企业号。BuilderId 的公共 start_url 是
+    // view.awsapps.com，企业号是自己的 d-xxx / xxx.awsapps.com 实例。空串先过滤掉再判。
+    let is_enterprise = params.provider_id == "Enterprise"
+        || start_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|u| !u.is_empty())
+            .is_some_and(|u| !crate::commands::common::is_builder_id_start_url(u));
+
+    // 纠正 provider_id：前端可能把企业号误判成 BuilderId，这里按 JWT 解出的真相回正，
+    // 使后续刷新（IdcProvider::new）和落库（account.provider）都用正确的 Enterprise。
+    if is_enterprise {
+        params.provider_id = "Enterprise".to_string();
+    }
 
     // BuilderId 和 Enterprise 都使用默认 region（如果未提供）
     let region = params.region.unwrap_or_else(|| "us-east-1".to_string());
